@@ -8,7 +8,8 @@ from rest_framework import viewsets, status, mixins
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
 from rest_framework.response import Response
-from rest_framework.routers import DefaultRouter
+
+from drf_spectacular.utils import extend_schema, OpenApiParameter
 
 from . import models, serializers
 
@@ -45,19 +46,25 @@ class CanManageRolesPermission(IsAuthenticated):
 
 # ---------------------------
 # Simple ModelViewSets for Permission & Role
-# (admin protected)
 # ---------------------------
+@extend_schema(tags=["Permissions"])
 class PermissionViewSet(viewsets.ModelViewSet):
     queryset = models.Permission.objects.all()
     serializer_class = serializers.PermissionSerializer
     permission_classes = [IsSuperuserOrAdmin]
 
 
+@extend_schema(tags=["Roles"])
 class RoleViewSet(viewsets.ModelViewSet):
     queryset = models.Role.objects.prefetch_related("permissions").all()
     serializer_class = serializers.RoleShortSerializer
     permission_classes = [IsSuperuserOrAdmin]
 
+    @extend_schema(
+        request=serializers.PermissionSerializer,
+        responses=serializers.RoleShortSerializer,
+        description="Add a permission to a role",
+    )
     @action(detail=True, methods=["post"], permission_classes=[IsSuperuserOrAdmin])
     def add_permission(self, request, pk=None):
         role = self.get_object()
@@ -73,40 +80,42 @@ class RoleViewSet(viewsets.ModelViewSet):
 # ---------------------------
 # RoleAssignment & ACE management
 # ---------------------------
+@extend_schema(tags=["RoleAssignments"])
 class RoleAssignmentViewSet(viewsets.ModelViewSet):
     queryset = models.RoleAssignment.objects.select_related("role").all()
     serializer_class = serializers.RoleAssignmentSerializer
-    permission_classes = [CanManageRolesPermission]  # restrict role assignment management
+    permission_classes = [CanManageRolesPermission]
 
+    @extend_schema(description="Assign a role to a principal")
     def perform_create(self, serializer):
-        # ensure role scope matches target if target provided (optional)
         serializer.save()
 
 
+@extend_schema(tags=["AccessControlEntries"])
 class AccessControlEntryViewSet(viewsets.ModelViewSet):
     queryset = models.AccessControlEntry.objects.all()
     serializer_class = serializers.AccessControlEntrySerializer
     permission_classes = [CanManageRolesPermission]
 
+    @extend_schema(description="Create an Access Control Entry (ACE)")
     def create(self, request, *args, **kwargs):
-        # Validate permissions exist optionally; but serializer will ensure
         return super().create(request, *args, **kwargs)
 
 
 # ---------------------------
 # Community / Group / Channel ViewSets
 # ---------------------------
+@extend_schema(tags=["Communities"])
 class CommunityViewSet(viewsets.ModelViewSet):
     queryset = models.Community.objects.all()
     serializer_class = serializers.CommunitySerializer
     permission_classes = [IsAuthenticated]
 
     def get_permissions(self):
-        # allow read for anyone if community is public; write requires authentication + permission
         if self.action in ("list", "retrieve"):
             return [AllowAny()]
         return [IsAuthenticated()]
-
+    
     def perform_create(self, serializer):
         # set owner to request.user by default if not provided
         owner = serializer.validated_data.get("owner", None)
@@ -116,12 +125,13 @@ class CommunityViewSet(viewsets.ModelViewSet):
             serializer.validated_data["owner"] = self.request.user
         serializer.save()
 
+    @extend_schema(
+        request=serializers.AccessControlEntrySerializer,
+        responses=serializers.AccessControlEntrySerializer,
+        description="Grant an ACE to a principal on this community",
+    )
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
     def grant(self, request, pk=None):
-        """
-        Convenience endpoint: grant an ACE to a principal on this community.
-        body: { "principal": {"type":"accounts.User","id":"..."} | null (public), "permissions": ["perm1"], "effect": "ALLOW", "expires_at": null }
-        """
         community = self.get_object()
         data = request.data.copy()
         data["target"] = {"type": f"{community._meta.app_label}.{community._meta.model_name}", "id": str(community.pk)}
@@ -131,40 +141,33 @@ class CommunityViewSet(viewsets.ModelViewSet):
         return Response(serializers.AccessControlEntrySerializer(ace).data, status=status.HTTP_201_CREATED)
 
 
+@extend_schema(tags=["Groups"])
 class GroupViewSet(viewsets.ModelViewSet):
     queryset = models.Group.objects.select_related("community").all()
     serializer_class = serializers.GroupSerializer
     permission_classes = [IsAuthenticated]
 
     def get_permissions(self):
-        # list/retrieve open to any authenticated or public listing - allow any for read
         if self.action in ("list", "retrieve"):
             return [AllowAny()]
         return [IsAuthenticated()]
-
+    
     def perform_create(self, serializer):
         # Create group and default settings handled by serializer.create
         serializer.save()
 
+    @extend_schema(description="Join a group respecting its join policy")
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
     def join(self, request, pk=None):
-        """
-        Join a group (respecting group's join policy).
-        If group is invite-only, client must provide invite token in body { "invite_token": "..." }.
-        """
         group = self.get_object()
         user = request.user
-
-        # check join policy
         settings_obj = getattr(group, "settings", None)
         join_policy = settings_obj.join_policy if settings_obj else "OPEN"
-
-        # If invite required
         invite_token = request.data.get("invite_token")
+
         if join_policy == "INVITE" and not invite_token:
             return Response({"detail": "Invite token required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # If invite provided, validate
         if invite_token:
             try:
                 invite = models.MembershipInvite.objects.get(token=invite_token, group=group)
@@ -174,7 +177,6 @@ class GroupViewSet(viewsets.ModelViewSet):
                 return Response({"detail": "Invite expired/used"}, status=status.HTTP_400_BAD_REQUEST)
             invite.use()
 
-        # Create membership
         user_ct = ContentType.objects.get_for_model(user.__class__)
         with transaction.atomic():
             mem, created = models.Membership.objects.update_or_create(
@@ -186,6 +188,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             group.recalc_member_count()
         return Response(serializers.MembershipSerializer(mem).data, status=status.HTTP_200_OK)
 
+    @extend_schema(description="Leave a group")
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
     def leave(self, request, pk=None):
         group = self.get_object()
@@ -200,15 +203,15 @@ class GroupViewSet(viewsets.ModelViewSet):
         group.recalc_member_count()
         return Response({"detail": "Left group"}, status=status.HTTP_200_OK)
 
+    @extend_schema(
+        request=serializers.MembershipInviteSerializer,
+        responses=serializers.MembershipInviteSerializer,
+        description="Create an invite for the group",
+    )
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
     def invite(self, request, pk=None):
-        """
-        Create an invite for the group. Permission required: 'group.invite' or be group moderator/owner.
-        body: { "expires_at": "...", "max_uses": 5 }
-        """
         group = self.get_object()
         user = request.user
-        # permission check: allow if user can 'group.invite' or is member moderator
         if not (group.can_user(user, "group.invite") or group.is_member(user) and group.memberships.filter(
                 user_content_type=ContentType.objects.get_for_model(user.__class__),
                 user_object_id=str(user.pk),
@@ -217,20 +220,19 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         serializer = serializers.MembershipInviteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        # Assign group automatically
         invite = serializer.save(group=group, created_by=user)
         return Response(serializers.MembershipInviteSerializer(invite).data, status=status.HTTP_201_CREATED)
 
+    @extend_schema(
+        request={"type": "object", "properties": {"user": {}, "role": {"type": "string"}}},
+        responses=serializers.MembershipSerializer,
+        description="Promote a member to a role",
+    )
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
     def promote(self, request, pk=None):
-        """
-        Promote a member to a role (body: { "user": {"type":"accounts.User","id":"..."}, "role": "<role_id>" })
-        Requires 'group.manage_members' permission or moderator.
-        """
         group = self.get_object()
         user = request.user
         if not group.can_user(user, "group.manage_members"):
-            # some moderators may also be allowed; check membership
             if not group.memberships.filter(user_content_type=ContentType.objects.get_for_model(user.__class__),
                                             user_object_id=str(user.pk),
                                             is_moderator=True).exists():
@@ -241,16 +243,12 @@ class GroupViewSet(viewsets.ModelViewSet):
         if not target_user_data or not role_id:
             return Response({"detail": "user and role required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # resolve user via GenericRelatedField logic: use ContentType lookup
-        # Expecting format {"type":"accounts.User","id":"<pk>"}
-        # reuse serializer helper to validate
         try:
             target = serializers.GenericRelatedField().to_internal_value(target_user_data)
         except Exception as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         role = get_object_or_404(models.Role, pk=role_id)
-        # find membership
         user_ct = ContentType.objects.get_for_model(target.__class__)
         try:
             mem = models.Membership.objects.get(group=group, user_content_type=user_ct, user_object_id=str(target.pk))
@@ -261,6 +259,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         return Response(serializers.MembershipSerializer(mem).data, status=status.HTTP_200_OK)
 
 
+@extend_schema(tags=["Channels"])
 class ChannelViewSet(viewsets.ModelViewSet):
     queryset = models.Channel.objects.prefetch_related("communities", "groups").all()
     serializer_class = serializers.ChannelSerializer
@@ -271,27 +270,20 @@ class ChannelViewSet(viewsets.ModelViewSet):
             return [AllowAny()]
         return [IsAuthenticated()]
 
+    @extend_schema(description="Join a channel if allowed by group/community membership or ACEs")
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
     def join(self, request, pk=None):
-        """
-        Join a channel: requires membership in at least one linked group/community or explicit channel role.
-        """
         channel = self.get_object()
         user = request.user
 
-        # Quick checks: if channel public and user has group/community membership that's active, allow
         if channel.is_public:
-            # check group membership
             for g in channel.groups.all():
                 if g.is_member(user):
-                    # create channel-level role assignment or membership if you model it later
                     return Response({"detail": "Allowed via group membership"}, status=status.HTTP_200_OK)
             for c in channel.communities.all():
-                # if user has community-level permission, allow
                 if models.CommunityPermissionHelper.can_user_on_community(user, c, "community.member"):
                     return Response({"detail": "Allowed via community membership"}, status=status.HTTP_200_OK)
 
-        # fallback: check channel ACEs or role assignments
         if channel.can_user(user, "channel.join"):
             return Response({"detail": "Allowed"}, status=status.HTTP_200_OK)
 
@@ -299,8 +291,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
 
 # ---------------------------
-# Membership & Invite ViewSets (detail operations)
+# Membership & Invite ViewSets
 # ---------------------------
+@extend_schema(tags=["Memberships"])
 class MembershipViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet,
                         mixins.UpdateModelMixin, mixins.DestroyModelMixin):
     queryset = models.Membership.objects.select_related("group").all()
@@ -308,7 +301,6 @@ class MembershipViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewse
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        # restrict listing to memberships related to the requesting user or groups they manage
         user = self.request.user
         if getattr(user, "is_superuser", False) or user.is_staff:
             return super().get_queryset()
@@ -316,17 +308,19 @@ class MembershipViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewse
         return super().get_queryset().filter(user_content_type=user_ct, user_object_id=str(user.pk))
 
 
+@extend_schema(tags=["MembershipInvites"])
 class MembershipInviteViewSet(viewsets.ModelViewSet):
     queryset = models.MembershipInvite.objects.all()
     serializer_class = serializers.MembershipInviteSerializer
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        request={"type": "object", "properties": {"token": {"type": "string"}}},
+        responses=serializers.MembershipSerializer,
+        description="Redeem an invite token to join a group/community",
+    )
     @action(detail=False, methods=["post"], permission_classes=[AllowAny])
     def redeem(self, request):
-        """
-        Redeem invite token to join group/community. Body: { "token": "abc123" }
-        If invite not valid => 400. If valid, create membership.
-        """
         token = request.data.get("token")
         if not token:
             return Response({"detail": "token required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -338,7 +332,6 @@ class MembershipInviteViewSet(viewsets.ModelViewSet):
         if not invite.is_valid():
             return Response({"detail": "Invite expired or used"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # require authentication unless invite is intended for anonymous users (app-specific)
         if not request.user or not request.user.is_authenticated:
             return Response({"detail": "Authentication required to redeem"}, status=status.HTTP_401_UNAUTHORIZED)
 
@@ -346,7 +339,6 @@ class MembershipInviteViewSet(viewsets.ModelViewSet):
         user_ct = ContentType.objects.get_for_model(user.__class__)
 
         with transaction.atomic():
-            # create membership for group or community; group priority if both set
             if invite.group:
                 mem, created = models.Membership.objects.update_or_create(
                     group=invite.group,
@@ -359,8 +351,6 @@ class MembershipInviteViewSet(viewsets.ModelViewSet):
                 invite.group.recalc_member_count()
                 return Response(serializers.MembershipSerializer(mem).data, status=status.HTTP_201_CREATED)
             elif invite.community:
-                # membership at community-level might map to group-less membership (not implemented),
-                # but you can choose to add the user to a default group, or track community membership separately.
                 invite.use()
                 return Response({"detail": "Invite redeemed for community (application-defined)"},
                                 status=status.HTTP_200_OK)
@@ -371,27 +361,21 @@ class MembershipInviteViewSet(viewsets.ModelViewSet):
 # ---------------------------
 # ModerationAction ViewSet
 # ---------------------------
+@extend_schema(tags=["ModerationActions"])
 class ModerationActionViewSet(viewsets.ModelViewSet):
     queryset = models.ModerationAction.objects.all()
     serializer_class = serializers.ModerationActionSerializer
-    permission_classes = [IsAuthenticated]  # exposing to authenticated users; use more restrictive permission in prod
+    permission_classes = [IsAuthenticated]
 
+    @extend_schema(description="Create a moderation action with permission checks")
     def create(self, request, *args, **kwargs):
-        """
-        When creating moderation actions, ensure the performer is set to request.user (if provided)
-        and check that the performer has moderation permissions on the target.
-        """
         data = request.data.copy()
-        # Default performed_by to request.user
         data.setdefault("performed_by", {"type": f"{request.user._meta.app_label}.{request.user._meta.model_name}", "id": str(request.user.pk)})
-
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
 
         target = serializer.validated_data["target"]
-        # permission check: can user moderate target?
         if not getattr(request.user, "is_superuser", False):
-            # try to ask the target for permission if it supports can_user
             if hasattr(target, "can_user"):
                 if not target.can_user(request.user, "moderation.action"):
                     return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
@@ -404,18 +388,18 @@ class ModerationActionViewSet(viewsets.ModelViewSet):
 # ---------------------------
 # Settings viewsets - update only
 # ---------------------------
+@extend_schema(tags=["GroupSettings"])
 class GroupSettingsViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin, mixins.UpdateModelMixin):
     queryset = models.GroupSettings.objects.select_related("group").all()
     serializer_class = serializers.GroupSettingsUpdateSerializer
     permission_classes = [IsAuthenticated]
 
     def get_object(self):
-        # Allow retrieving by group pk via /groups/{pk}/settings/ if needed; otherwise use default pk
         return super().get_object()
 
 
+@extend_schema(tags=["ChannelSettings"])
 class ChannelSettingsViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin, mixins.UpdateModelMixin):
     queryset = models.ChannelSettings.objects.select_related("channel").all()
     serializer_class = serializers.ChannelSettingsUpdateSerializer
     permission_classes = [IsAuthenticated]
-
