@@ -36,6 +36,17 @@ INSTALLED_APPS = [
     # Local apps
     "apps.accounts.apps.AccountsConfig",
     "apps.core.apps.CoreConfig",
+    "apps.content.apps.ContentConfig",
+    "apps.media.apps.MediaConfig",
+    "apps.events.apps.EventsConfig",
+    "apps.notifications.apps.NotificationsConfig",
+    "apps.moderation.apps.ModerationConfig",
+    "apps.ai_integration.apps.AIIntegrationConfig",
+    "apps.commerce.apps.CommerceConfig",
+    "apps.surveys.apps.SurveysConfig",
+    "apps.bridge.apps.BridgeConfig",
+    "apps.analytics.apps.AnalyticsConfig",
+    "apps.tiers.apps.TiersConfig",
 ]
 
 MIDDLEWARE = [
@@ -127,6 +138,11 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_PAGINATION_CLASS": "common.pagination.StandardResultsSetPagination",
     "PAGE_SIZE": 25,
+    'DEFAULT_FILTER_BACKENDS': (
+        'django_filters.rest_framework.DjangoFilterBackend',
+        'rest_framework.filters.SearchFilter',
+        'rest_framework.filters.OrderingFilter',
+    ),
 }
 
 # drf-spectacular settings
