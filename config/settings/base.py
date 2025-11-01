@@ -6,7 +6,16 @@ import os
 from pathlib import Path
 from datetime import timedelta
 
+# NEW: load .env early so all os.environ lookups work everywhere
+try:
+    from dotenv import load_dotenv  # pip install python-dotenv
+except ImportError:  # optional safety if not installed yet
+    def load_dotenv(*args, **kwargs):
+        return False
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+load_dotenv(BASE_DIR / ".env")  # reads .env at project root
+
 ENV = os.environ.get("DJANGO_ENV", "local")
 
 # SECRET_KEY should be overridden via environment in production
@@ -27,10 +36,10 @@ INSTALLED_APPS = [
 
     # Third-party
     "rest_framework",
-    "rest_framework.authtoken",
-    "drf_spectacular",            # OpenAPI generation
-    "django_extensions",          # useful utilities in dev
-    "django_celery_beat",         # periodic tasks scheduler
+    # "rest_framework.authtoken",  # optional: remove if no longer using opaque tokens
+    "drf_spectacular",
+    "django_extensions",
+    "django_celery_beat",
     "django_celery_results",
 
     # Local apps
@@ -118,30 +127,28 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # Custom user
 AUTH_USER_MODEL = "accounts.User"
 
-# Authentication backends (Django-level). Add your token backend here so `authenticate()` can accept token param.
+# Authentication backends (Django-level).
 AUTHENTICATION_BACKENDS = [
     "django.contrib.auth.backends.ModelBackend",
-    # path to the TokenAuthBackend we placed in apps/accounts/auth_backends.py
-    "apps.accounts.auth_backends.TokenAuthBackend",
+    # If you previously had a custom token backend, remove/comment it when fully on JWT:
+    # "apps.accounts.auth_backends.TokenAuthBackend",
 ]
 
 # REST Framework + JWT settings
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    # Keep JWTAuthentication but prepend our ApiToken DRF authenticator
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        # Custom DRF authenticator implemented in views (or move to a dedicated module)
-        "apps.accounts.authentication.ApiTokenDRFAuthentication",
         "rest_framework_simplejwt.authentication.JWTAuthentication",
+        # Keep SessionAuthentication for browsable API if you like:
         "rest_framework.authentication.SessionAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_PAGINATION_CLASS": "common.pagination.StandardResultsSetPagination",
     "PAGE_SIZE": 25,
-    'DEFAULT_FILTER_BACKENDS': (
-        'django_filters.rest_framework.DjangoFilterBackend',
-        'rest_framework.filters.SearchFilter',
-        'rest_framework.filters.OrderingFilter',
+    "DEFAULT_FILTER_BACKENDS": (
+        "django_filters.rest_framework.DjangoFilterBackend",
+        "rest_framework.filters.SearchFilter",
+        "rest_framework.filters.OrderingFilter",
     ),
 }
 
@@ -150,30 +157,37 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "KIS Accounts & Identity API",
     "DESCRIPTION": "OpenAPI schema for KIS Accounts & Identity service",
     "VERSION": "1.0.0",
-    # display bearer auth in the UI (JWT & bearer token)
     "COMPONENT_SPLIT_REQUEST": True,
     "SERVE_INCLUDE_SCHEMA": False,
     "POSTPROCESSING_HOOKS": [],
-    # Security schemes - both JWT and generic bearer token are acceptable in UI
     "SECURITY": [{"bearerAuth": []}],
     "COMPONENTS": {
         "securitySchemes": {
             "bearerAuth": {
                 "type": "http",
                 "scheme": "bearer",
-                # swagger UI will show "Bearer" — both JWT and ApiToken will use this header
-                "bearerFormat": "Token",
+                "bearerFormat": "JWT",
             }
         }
     },
 }
 
-# Simple JWT defaults (optional; you may use both JWT and ApiToken flows)
+# Simple JWT — read signing/validation config from environment
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=int(os.environ.get("JWT_ACCESS_MINUTES", 60))),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=int(os.environ.get("JWT_REFRESH_DAYS", 7))),
     "ALGORITHM": "HS256",
+
+    # Use your JWT secret from the environment (fallback to SECRET_KEY for dev)
+    "SIGNING_KEY": os.environ.get("JWT_SECRET", SECRET_KEY),
+
+    # Optional but recommended for strict validation
+    # Set these in .env to have them embedded in tokens and enforced by verifiers
+    "ISSUER": os.environ.get("JWT_ISSUER", None),          # e.g., "http://localhost:8000"
+    "AUDIENCE": os.environ.get("JWT_AUDIENCE", None),      # e.g., "messaging-platform"
+
     "AUTH_HEADER_TYPES": ("Bearer",),
+    "UPDATE_LAST_LOGIN": True,
 }
 
 # Token / entitlement configuration (override these in environment-specific settings if desired)

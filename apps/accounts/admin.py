@@ -48,7 +48,7 @@ class ApiTokenInline(admin.TabularInline):
 # -------------------------
 @admin.register(User)
 class UserAdmin(admin.ModelAdmin):
-    list_display = ('email', 'display_name', 'username', 'tier', 'email_verified', 'is_staff', 'created_at')
+    list_display = ('id', 'email', 'display_name', 'username', 'tier', 'email_verified', 'is_staff', 'created_at')
     search_fields = ('email', 'display_name', 'username', 'phone')
     readonly_fields = ('created_at', 'updated_at', 'last_login_at', 'last_password_change_at')
     list_filter = ('tier', 'status', 'is_staff', 'email_verified')

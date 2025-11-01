@@ -6,10 +6,9 @@ from .views import (
     ExperienceViewSet,
     ProjectViewSet,
     RecommendationViewSet,
-    RegisterView,
-    LoginView,
-    LogoutView,
-    ApiTokenViewSet,
+    RegisterView,     # ViewSet (create -> JWTs)
+    LoginView,        # APIView (returns JWTs)
+    LogoutView,       # APIView (blacklists refresh if enabled)
     UserSkillViewSet,
     UserViewSet,
     ProfileViewSet,
@@ -17,11 +16,23 @@ from .views import (
     SubscriptionViewSet,
     SessionViewSet,
 )
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+
+# Optional: SimpleJWT endpoints (convenience here too)
+from rest_framework_simplejwt.views import (
+    TokenObtainPairView,   # username/password -> {access, refresh}
+    TokenRefreshView,      # {refresh} -> {access}
+    TokenVerifyView,       # {token} -> {} if valid
+)
 
 router = DefaultRouter()
+
+# Auth (registration via ViewSet create)
 router.register(r"auth/register", RegisterView, basename="auth-register")
-router.register(r"auth/tokens", ApiTokenViewSet, basename="auth-tokens")
+
+# NOTE: removed ApiTokenViewSet — no more opaque API tokens in JWT flow
+# router.register(r"auth/tokens", ApiTokenViewSet, basename="auth-tokens")
+
+# Core resources
 router.register(r"users", UserViewSet, basename="users")
 router.register(r"profiles", ProfileViewSet, basename="profiles")
 router.register(r"tiers", AccountTierViewSet, basename="tiers")
@@ -34,7 +45,14 @@ router.register(r"projects", ProjectViewSet, basename="projects")
 router.register(r"recommendations", RecommendationViewSet, basename="recommendations")
 
 urlpatterns = [
-    path("auth/login/", LoginView.as_view(), name="auth-login"),
+    # JWT login/logout you defined in views.py
+    path("auth/login/",  LoginView.as_view(),  name="auth-login"),
     path("auth/logout/", LogoutView.as_view(), name="auth-logout"),
+
+    # Optional: direct SimpleJWT endpoints (tooling-friendly)
+    path("auth/jwt/create/",  TokenObtainPairView.as_view(), name="jwt-create"),
+    path("auth/jwt/refresh/", TokenRefreshView.as_view(),   name="jwt-refresh"),
+    path("auth/jwt/verify/",  TokenVerifyView.as_view(),    name="jwt-verify"),
+
     path("", include(router.urls)),
 ]
