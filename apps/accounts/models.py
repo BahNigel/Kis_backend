@@ -22,12 +22,14 @@ from django.db.models.signals import post_save, pre_delete, post_delete
 from django.dispatch import receiver
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 
 import uuid
 import secrets
 import hashlib
 import hmac
 import datetime
+import re
 
 # ---------------------------------------------------------------------
 # Config helpers (override via Django settings if you like)
@@ -68,48 +70,139 @@ class BaseEntity(models.Model):
 # ---------------------------------------------------------------------
 # User manager
 # ---------------------------------------------------------------------
+# managers.py (or wherever your manager lives)
 class UserManager(BaseUserManager):
     use_in_migrations = True
 
-    def _create_user(self, email: str, password: Optional[str], **extra):
-        if not email:
-            raise ValueError("Users must have an email address")
-        email = self.normalize_email(email)
-        username = extra.get("username") or None
-        # simple uniqueness guard for username if provided
-        if username:
-            existing = self.model.objects.filter(username=username).exclude(email=email)
-            if existing.exists():
-                raise ValidationError({"username": "Username already in use"})
-        user = self.model(email=email, username=username, **extra)
+    # -------- Normalizers --------
+    @staticmethod
+    def normalize_phone(phone: Optional[str]) -> Optional[str]:
+        if phone is None:
+            return None
+        phone = phone.strip()
+        if phone.startswith("+"):
+            return "+" + re.sub(r"\D", "", phone[1:])
+        return re.sub(r"\D", "", phone)
+
+    @staticmethod
+    def normalize_country(country: Optional[str]) -> Optional[str]:
+        if country is None:
+            return None
+        return country.strip().upper()
+
+    # -------- Core factory (keyword-only) --------
+    def _create_user(
+        self,
+        *,
+        phone: Optional[str] = None,
+        email: Optional[str] = None,
+        password: Optional[str],
+        country: Optional[str] = None,
+        **extra,
+    ):
+        """
+        Creates and saves a User. Rule:
+          - Normal users: require phone + country.
+          - Superusers:   require email + country (phone optional).
+        """
+        # IMPORTANT: pull potentially duplicated fields out of extra first
+        # (createsuperuser passes everything in **user_data)
+        if "phone" in extra and phone is None:
+            phone = extra.pop("phone")
+        if "email" in extra and email is None:
+            email = extra.pop("email")
+        if "country" in extra and country is None:
+            country = extra.pop("country")
+
+        username = extra.pop("username", None)
+
+        is_superuser = bool(extra.get("is_superuser"))
+
+        # Required fields depending on role
+        if is_superuser:
+            if not email:
+                raise ValueError("Superuser must have an email address")
+        else:
+            if not phone:
+                raise ValueError("Users must have a phone number")
+
+        if not country:
+            raise ValueError("Country is required")
+
+        # Normalize
+        if phone:
+            phone = self.normalize_phone(phone)
+        if email:
+            email = self.normalize_email(email)
+        country = self.normalize_country(country)
+
+        user = self.model(
+            phone=phone,
+            email=email,
+            username=username,
+            country=country,
+            **extra,
+        )
+
         if password:
             user.set_password(password)
-            user.last_password_change_at = timezone.now()
+            if hasattr(user, "last_password_change_at"):
+                user.last_password_change_at = timezone.now()
         else:
             user.set_unusable_password()
-        user.save(using=self._db)
+
+        try:
+            user.full_clean()
+            user.save(using=self._db)
+        except IntegrityError as e:
+            raise ValidationError({"non_field_errors": ["Duplicate or invalid data."]}) from e
+
         return user
 
-    def create_user(self, email: str, password: Optional[str] = None, **extra):
+    # -------- Public factories --------
+    def create_user(self, phone: str, password: Optional[str] = None, **extra):
+        """
+        Normal users: phone + country required.
+        Accept email optionally; both may be in extra (pop them).
+        """
+        country = extra.pop("country", None)
+        email = extra.pop("email", None)
         extra.setdefault("is_staff", False)
         extra.setdefault("is_superuser", False)
-        return self._create_user(email, password, **extra)
+        return self._create_user(phone=phone, email=email, password=password, country=country, **extra)
 
     def create_superuser(self, email: str, password: str, **extra):
-        extra.setdefault("is_staff", True)
-        extra.setdefault("is_superuser", True)
+        """
+        Superusers: email + country required; phone optional.
+        Ensure flags enforced, and pop duplicates from extra.
+        """
         if not password:
             raise ValueError("Superuser must have a password")
-        return self._create_user(email, password, **extra)
 
-    def get_by_natural_key(self, email):
-        return self.get(email__iexact=email)
+        country = extra.pop("country", None)
+        phone = extra.pop("phone", None)
+
+        extra.setdefault("is_staff", True)
+        extra.setdefault("is_superuser", True)
+        if extra.get("is_staff") is not True:
+            raise ValueError("Superuser must have is_staff=True.")
+        if extra.get("is_superuser") is not True:
+            raise ValueError("Superuser must have is_superuser=True.")
+
+        return self._create_user(phone=phone, email=email, password=password, country=country, **extra)
+
+    # -------- Username_FIELD lookup --------
+    def get_by_natural_key(self, key: str):
+        username_field = getattr(self.model, "USERNAME_FIELD", "phone")
+        if username_field == "phone":
+            return self.get(phone=self.normalize_phone(key))
+        return self.get(**{f"{username_field}__iexact": key})
 
 # ---------------------------------------------------------------------
 # User model
 # ---------------------------------------------------------------------
 class User(AbstractBaseUser, PermissionsMixin, BaseEntity):
-    email = models.EmailField(unique=True, db_index=True)
+    email = models.EmailField(unique=True, db_index=True, blank=True, null=True)
     username = models.CharField(unique=True, max_length=150, blank=True, null=True, db_index=True)
     display_name = models.CharField(max_length=200, blank=True, null=True)
     phone = models.CharField(unique=True, max_length=50, blank=True, null=True)
@@ -121,6 +214,7 @@ class User(AbstractBaseUser, PermissionsMixin, BaseEntity):
     trust_score = models.FloatField(default=0.0)
     verification = models.JSONField(default=dict, blank=True)
     entitlements = models.JSONField(default=dict, blank=True)
+    country = models.CharField(max_length=20, default="CM")
 
     # additional meta flags
     email_verified = models.BooleanField(default=False, db_index=True)
@@ -133,12 +227,14 @@ class User(AbstractBaseUser, PermissionsMixin, BaseEntity):
 
     objects = UserManager()
 
-    USERNAME_FIELD = "username"
-    REQUIRED_FIELDS = []
+    USERNAME_FIELD = "phone"
+    # ✅ Makes `createsuperuser` prompt for these two:
+    REQUIRED_FIELDS = ["email", "country"]
+
 
     class Meta:
         indexes = [
-            models.Index(fields=["email"]),
+            models.Index(fields=["phone"]),
             models.Index(fields=["tier"]),
             models.Index(fields=["username"]),
         ]
@@ -146,7 +242,7 @@ class User(AbstractBaseUser, PermissionsMixin, BaseEntity):
         verbose_name_plural = "Users"
 
     def __str__(self) -> str:
-        return self.email
+        return self.phone or self.email or self.username or f"User {self.pk}"
 
     # ---------- Business logic helpers ----------
     def recalc_trust_score(self) -> float:
@@ -163,14 +259,14 @@ class User(AbstractBaseUser, PermissionsMixin, BaseEntity):
         return self.trust_score
 
     @classmethod
-    def register(cls, email: str, password: Optional[str] = None, **extra) -> "User":
+    def register(cls, phone: str, password: Optional[str] = None, **extra) -> "User":
         """
         Create user + profile in a transaction. Use from registration endpoints.
         """
         with transaction.atomic():
-            user = cls.objects.create_user(email=email, password=password, **extra)
+            user = cls.objects.create_user(phone=phone, password=password, **extra)
             # profile auto-created by signal
-            AuditLog.log(user, "user.create", {"email": user.email})
+            AuditLog.log(user, "user.create", {"phone": user.phone})
             return user
 
     # ---------- Entitlements cache helpers ----------

@@ -12,6 +12,11 @@ from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.contrib.auth import authenticate
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
+
+from apps.core.phone_utils import to_e164
+from django.utils.translation import gettext_lazy as _
 
 from rest_framework import viewsets, mixins, filters, status, serializers, permissions
 from rest_framework.decorators import action
@@ -51,6 +56,7 @@ from .serializers import (
     UserSkillSerializer,
     ProjectSerializer,
     RecommendationSerializer,
+    LoginSerializer,
 )
 
 # -----------------------------
@@ -97,37 +103,37 @@ def issue_tokens_for_user(user: User) -> dict:
 class RegisterView(mixins.CreateModelMixin, viewsets.GenericViewSet):
     queryset = User.objects.all()
     serializer_class = UserCreateSerializer
-    permission_classes = (AllowAny,)
+    permission_classes = [AllowAny]
+    authentication_classes = []
 
     def create(self, request, *args, **kwargs):
+        print(request.data)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        with transaction.atomic():
-            user = serializer.save()
-            UsageQuota.objects.get_or_create(
-                user=user,
-                defaults={"quotas_json": {"ai_queries_per_day": 5}, "last_reset_at": timezone.now()},
-            )
-            AuditLog.log(actor=user, action="user.register", meta={"email": user.email})
+
+        try:
+            with transaction.atomic():
+                user = serializer.save()
+
+                # Ensure a starting quota; avoids duplication with serializer (serializer no longer creates it)
+                UsageQuota.objects.get_or_create(
+                    user=user,
+                    defaults={"quotas_json": {"ai_queries_per_day": 5}, "last_reset_at": timezone.now()},
+                )
+
+                AuditLog.log(actor=user, action="user.register", meta={"phone": user.phone, "country": user.country})
+        except DRFValidationError:
+            # Already well-formed for client
+            raise
+        except IntegrityError:
+            # Fallback if something unique trips at DB-level unexpectedly
+            raise DRFValidationError({"detail": "Duplicate or invalid data."})
+
         user_payload = UserSerializer(user, context={"request": request}).data
         tokens = issue_tokens_for_user(user)
         resp = {**user_payload, **tokens}
         return Response(resp, status=status.HTTP_201_CREATED)
 
-class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField()
-    password = serializers.CharField(write_only=True)
-
-    def validate(self, attrs):
-        email = attrs.get("email")
-        password = attrs.get("password")
-        user = authenticate(username=email, password=password)
-        if user is None:
-            raise serializers.ValidationError("Invalid credentials")
-        if not user.is_active:
-            raise serializers.ValidationError("User account is disabled")
-        attrs["user"] = user
-        return attrs
 
 @extend_schema(
     summary="Login (email + password) -> returns JWT",
@@ -136,15 +142,32 @@ class LoginSerializer(serializers.Serializer):
     tags=["Auth"]
 )
 class LoginView(APIView):
-    permission_classes = (AllowAny,)
+    permission_classes = [AllowAny]
+    authentication_classes = []
 
     def post(self, request):
-        serializer = LoginSerializer(data=request.data)
+        serializer = LoginSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
-        tokens = issue_tokens_for_user(user)
-        AuditLog.log(actor=user, action="user.login", meta={"ip": request.META.get("REMOTE_ADDR")})
-        return Response(tokens, status=status.HTTP_200_OK)
+        tokens = issue_tokens_for_user(user)  # should return {access, refresh} or similar
+
+        # Optional bookkeeping
+        AuditLog.log(actor=user, action="user.login",
+                     meta={"ip": request.META.get("REMOTE_ADDR")})
+
+        return Response(
+            {
+                "access": tokens.get("access"),
+                "refresh": tokens.get("refresh"),
+                "user": {
+                    "id": user.id,
+                    "phone": serializer.validated_data["phone_e164"],
+                    "status": getattr(user, "status", "active"),
+                    "is_active": user.is_active,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
 
 class LogoutSerializer(serializers.Serializer):
     refresh = serializers.CharField(required=False)
@@ -210,6 +233,35 @@ class UserViewSet(viewsets.ModelViewSet):
         score = user.recalc_trust_score()
         return Response({"trust_score": score})
 
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="check-status",
+        permission_classes=[AllowAny],
+        authentication_classes=[],
+    )
+    def check_status(self, request):
+        phone = (request.query_params.get("phone") or "").strip()
+        user = request.user if getattr(request.user, "is_authenticated", False) else None
+        if not user and phone:
+            user = User.objects.filter(phone=phone).first()
+
+        if not user:
+            return Response({"success": False, "message": "user not found"}, status=404)
+
+        return Response(
+            {
+                "success": True,
+                "user": {
+                    "id": user.id,
+                    "phone": user.phone,
+                    "status": user.status,
+                    "is_active": user.is_active,
+                    "verification": user.verification,
+                },
+            },
+            status=200,
+        )
 @extend_schema_view(
     list=extend_schema(summary="List profiles"),
     retrieve=extend_schema(summary="Retrieve profile"),
@@ -337,3 +389,4 @@ class RecommendationViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(recommender_user=self.request.user)
+

@@ -28,6 +28,7 @@ urlpatterns = [
     path("api/v1/", include("apps.bridge.urls")),
     path("api/v1/", include("apps.analytics.urls")),
     path("api/v1/", include("apps.tiers.urls")),
+    path("api/v1/", include("apps.otp.urls")),
 
     # --- JWT auth endpoints (SimpleJWT) ---
     # Obtain access/refresh with username/password

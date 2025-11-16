@@ -56,6 +56,7 @@ INSTALLED_APPS = [
     "apps.bridge.apps.BridgeConfig",
     "apps.analytics.apps.AnalyticsConfig",
     "apps.tiers.apps.TiersConfig",
+    "apps.otp.apps.OtpConfig",
 ]
 
 MIDDLEWARE = [
@@ -129,9 +130,8 @@ AUTH_USER_MODEL = "accounts.User"
 
 # Authentication backends (Django-level).
 AUTHENTICATION_BACKENDS = [
-    "django.contrib.auth.backends.ModelBackend",
-    # If you previously had a custom token backend, remove/comment it when fully on JWT:
-    # "apps.accounts.auth_backends.TokenAuthBackend",
+    "apps.accounts.auth_backends.PhoneOrEmailBackend",  # our custom backend
+    "django.contrib.auth.backends.ModelBackend",   # keep as fallback
 ]
 
 # REST Framework + JWT settings
