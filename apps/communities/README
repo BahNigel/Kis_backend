@@ -1,0 +1,50 @@
+8. Wire it into Django
+settings.py
+Add to INSTALLED_APPS:
+INSTALLED_APPS = [
+    # ...
+    "apps.chat",
+    "apps.partners",
+    "apps.groups",
+    "apps.communities",
+]
+config/urls.py
+Include the communities API:
+from django.urls import path, include
+
+urlpatterns = [
+    # ...
+    path("api/v1/chat/", include("apps.chat.urls", namespace="chat")),
+    path("api/v1/partners/", include("apps.partners.urls", namespace="partners")),
+    path("api/v1/groups/", include("apps.groups.urls", namespace="groups")),
+    path("api/v1/communities/", include("apps.communities.urls", namespace="communities")),
+]
+9. How this fits into the bigger picture
+Partner
+Owns many Communities.
+Has optional main_conversation (partner-wide room).
+Community
+Belongs to a Partner.
+Has optional main_conversation (community lobby).
+Will own many Groups and Channels.
+Group
+Belongs to a Community (and optionally to a Partner directly).
+Has its own conversation.
+Everything is anchored on Conversation from chat, which is what your NestJS backend will use for messages.
+When you create a community via:
+POST /api/v1/communities/communities/
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "partner": "<partner_id>",
+  "name": "KIS Dev Community",
+  "slug": "kis-dev",
+  "description": "Community for Kingdom Impact devs",
+  "avatar_url": "https://...",
+  "create_main_conversation": true
+}
+you get back:
+Community id
+partner
+main_conversation_id → that’s the conversation you open in your React Native chat UI and connect to NestJS with.

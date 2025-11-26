@@ -2,6 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    CheckContact,
     EducationViewSet,
     ExperienceViewSet,
     ProjectViewSet,
@@ -53,6 +54,7 @@ urlpatterns = [
     path("auth/jwt/create/",  TokenObtainPairView.as_view(), name="jwt-create"),
     path("auth/jwt/refresh/", TokenRefreshView.as_view(),   name="jwt-refresh"),
     path("auth/jwt/verify/",  TokenVerifyView.as_view(),    name="jwt-verify"),
+    path("contacts/check", CheckContact.as_view(), name="check_contact"),
 
     path("", include(router.urls)),
 ]

@@ -1,0 +1,39 @@
+8. Wire it into settings & URLs
+settings.py
+Add the app:
+INSTALLED_APPS = [
+    # ...
+    "apps.chat",
+    "apps.groups",
+    "apps.partners",
+]
+config/urls.py
+Include the partners API (similar to chat/groups):
+from django.urls import path, include
+
+urlpatterns = [
+    # ...
+    path("api/v1/chat/", include("apps.chat.urls", namespace="chat")),
+    path("api/v1/groups/", include("apps.groups.urls", namespace="groups")),
+    path("api/v1/partners/", include("apps.partners.urls", namespace="partners")),
+]
+So your full endpoints look like:
+POST /api/v1/partners/partners/ → create a partner (+ optional main conversation)
+GET /api/v1/partners/partners/ → list partners the user owns or is in the main conversation
+GET /api/v1/partners/partners/{id}/ → partner details
+POST /api/v1/partners/partners/{id}/deactivate/ → deactivate partner
+9. How this ties into chat & the “big app”
+Each Partner is an organization that can own:
+multiple Communities,
+Groups,
+Channels,
+and a top-level main Conversation.
+When you create a partner (and create_main_conversation=true):
+A Conversation(type=GROUP) is created and linked as partner.main_conversation.
+The owner becomes ConversationMember with base_role=owner.
+ConversationSettings row is created for that conversation.
+Later:
+Communities, Groups, Channels will all carry a partner = ForeignKey(Partner, ...).
+Frontend can:
+Call Partners API to show the list of organizations the user belongs to.
+Use main_conversation_id to open the “Partner main chat” in your RN chat UI via NestJS.

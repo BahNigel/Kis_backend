@@ -57,6 +57,13 @@ INSTALLED_APPS = [
     "apps.analytics.apps.AnalyticsConfig",
     "apps.tiers.apps.TiersConfig",
     "apps.otp.apps.OtpConfig",
+
+    #chats
+    "apps.chat.apps.ChatConfig",
+    "apps.partners.apps.PartnersConfig",
+    "apps.communities.apps.CommunitiesConfig",
+    "apps.groups.apps.GroupsConfig",
+    "apps.channels.apps.ChannelsConfig",
 ]
 
 MIDDLEWARE = [

@@ -29,6 +29,11 @@ urlpatterns = [
     path("api/v1/", include("apps.analytics.urls")),
     path("api/v1/", include("apps.tiers.urls")),
     path("api/v1/", include("apps.otp.urls")),
+    path("api/v1/", include("apps.chat.urls", namespace="chat")),
+    path("api/v1/", include("apps.partners.urls", namespace="partners")),
+    path("api/v1/", include("apps.communities.urls", namespace="communities")),
+    path("api/v1/", include("apps.groups.urls", namespace="groups")),
+    path("api/v1/", include("apps.channels.urls", namespace="channels")),
 
     # --- JWT auth endpoints (SimpleJWT) ---
     # Obtain access/refresh with username/password
@@ -43,4 +48,9 @@ urlpatterns = [
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
     path("api/docs/swagger/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
     path("api/docs/redoc/", SpectacularRedocView.as_view(url_name="schema"), name="redoc"),
+
+
+    #chat urls
+
+    path("api/v1/chat/", include("apps.chat.urls", namespace="chat")),
 ]

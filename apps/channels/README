@@ -1,0 +1,48 @@
+8. Wire it into Django
+settings.py
+Add the app:
+INSTALLED_APPS = [
+    # ...
+    "apps.chat",
+    "apps.partners",
+    "apps.communities",
+    "apps.groups",
+    "apps.channels",
+]
+config/urls.py
+Include the channels API:
+from django.urls import path, include
+
+urlpatterns = [
+    # ...
+    path("api/v1/chat/", include("apps.chat.urls", namespace="chat")),
+    path("api/v1/partners/", include("apps.partners.urls", namespace="partners")),
+    path("api/v1/communities/", include("apps.communities.urls", namespace="communities")),
+    path("api/v1/groups/", include("apps.groups.urls", namespace="groups")),
+    path("api/v1/channels/", include("apps.channels.urls", namespace="channels")),
+]
+9. How channels behave in the big picture
+Partner → owns many Communities, Groups, Channels.
+Community → owns many Groups, Channels.
+Channel → special conversation (type CHANNEL), often with:
+send_policy=ADMINS_ONLY (broadcast/announcements),
+Many subscribers as ConversationMember with base_role member or readonly.
+Creating a channel:
+POST /api/v1/channels/channels/
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "name": "KIS Announcements",
+  "slug": "kis-announcements",
+  "description": "Global updates for KIS platform.",
+  "avatar_url": "https://...",
+  "partner": "<partner_id>",
+  "community": null
+}
+Backend does:
+Creates Conversation(type=CHANNEL) with that name/description/avatar.
+Adds the owner as ConversationMember with base_role="owner".
+Creates ConversationSettings with send_policy="admins_only".
+Creates Channel linked to that Conversation.
+Frontend then uses conversation_id to talk to NestJS for real-time messaging.

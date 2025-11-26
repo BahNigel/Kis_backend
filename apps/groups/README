@@ -1,0 +1,65 @@
+8. Wire it into Django
+settings.py
+Add the app:
+INSTALLED_APPS = [
+    # ...
+    "apps.chat",
+    "apps.groups",
+    # later: "apps.partners", "apps.communities", "apps.channels", ...
+]
+config/urls.py
+Include the groups API:
+from django.urls import path, include
+
+urlpatterns = [
+    # ...
+    path("api/v1/chat/", include("apps.chat.urls", namespace="chat")),
+    path("api/v1/", include("apps.groups.urls", namespace="groups")),
+]
+(You can also namespace differently if you want.)
+9. How this behaves end-to-end
+Create a Group (and its Conversation)
+Request
+POST /api/v1/groups/groups/
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "name": "KIS Dev Team",
+  "slug": "kis-dev-team",
+  "partner": null,
+  "community": null
+}
+What happens backend:
+GroupCreateSerializer.create():
+Creates Conversation(type=GROUP, title="KIS Dev Team", created_by=request.user).
+Creates ConversationMember for the owner with base_role="owner".
+Creates ConversationSettings for that conversation.
+Creates a Group linked to this Conversation.
+Response includes:
+Group id, name, slug, owner, etc.
+conversation_id so the frontend can open that room in your RN chat UI and connect over NestJS.
+Response example
+{
+  "id": "d37a8a3c-4b2e-4ac3-9e29-123456789abc",
+  "name": "KIS Dev Team",
+  "slug": "kis-dev-team",
+  "partner": null,
+  "community": null,
+  "owner": 7,
+  "conversation_id": "e7d8f1c2-1b2c-4d3e-9f3a-abcdefabcdef",
+  "is_archived": false,
+  "created_at": "2025-11-18T10:45:00Z",
+  "updated_at": "2025-11-18T10:45:00Z"
+}
+List user’s groups
+GET /api/v1/groups/groups/
+Authorization: Bearer <token>
+Returns all groups where:
+The user is an active ConversationMember of group.conversation.
+How it connects to NestJS
+Frontend gets conversation_id from this Groups API.
+For messaging, the RN client connects to NestJS WebSocket with conversation_id and user_id (via token).
+NestJS checks with Django (or via a shared cache) whether:
+user is an active ConversationMember of that conversation.
+If okay, NestJS writes messages into Mongo and maybe calls back to Django to update last_message_at and last_message_preview.

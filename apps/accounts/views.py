@@ -168,6 +168,7 @@ class LoginView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+    
 
 class LogoutSerializer(serializers.Serializer):
     refresh = serializers.CharField(required=False)
@@ -390,3 +391,53 @@ class RecommendationViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(recommender_user=self.request.user)
 
+class CheckContact(APIView):
+    """
+    GET /api/v1/contacts/check?phone=+237676139884
+
+    Headers:
+      Authorization: Bearer <access_token>
+
+    Response (example if user exists):
+      {
+        "registered": true,
+        "userId": 7,
+        "chatId": null   // you can wire 1–1 chat ID later if you like
+      }
+
+    If no user with that phone:
+      {
+        "registered": false
+      }
+    """
+    authentication_classes = JWT_AUTH
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        phone = request.query_params.get("phone")
+        print("now checking for the phone: ", phone)
+
+        if not phone:
+            return Response(
+                {"detail": "phone is required"},
+                status=400,
+            )
+
+        # Normalize if needed (e.g. strip spaces); your frontend already sends "+2376..."
+        phone = phone.strip()
+
+        # Look up any user with this phone
+        user = User.objects.filter(phone=phone).first()
+
+        if not user:
+            # Not a KIS user
+            return Response({"registered": False})
+
+        # If you eventually create / fetch a 1-1 chat here, set chat_id accordingly
+        chat_id = None
+
+        return Response({
+            "registered": True,
+            "userId": user.id,
+            "chatId": chat_id,
+        })
