@@ -89,6 +89,7 @@ class Conversation(models.Model):
         related_name='conversations_created',
     )
 
+    # ───────────── DM request workflow ─────────────
     request_state = models.CharField(
         max_length=16,
         choices=ConversationRequestState.choices,
@@ -96,6 +97,7 @@ class Conversation(models.Model):
         db_index=True,
         help_text="Direct chat request workflow state.",
     )
+
     request_initiator = models.ForeignKey(
         User,
         null=True,
@@ -104,6 +106,7 @@ class Conversation(models.Model):
         related_name='dm_requests_initiated',
         help_text="User who sent the first message / initiated the direct chat request.",
     )
+
     request_recipient = models.ForeignKey(
         User,
         null=True,
@@ -112,11 +115,13 @@ class Conversation(models.Model):
         related_name='dm_requests_received',
         help_text="User who receives the direct chat request.",
     )
+
     request_accepted_at = models.DateTimeField(
         null=True,
         blank=True,
         help_text="Timestamp when the recipient accepted the request (or replied).",
     )
+
     request_rejected_at = models.DateTimeField(
         null=True,
         blank=True,
@@ -124,9 +129,25 @@ class Conversation(models.Model):
     )
 
     is_archived = models.BooleanField(default=False, db_index=True)
+    archived_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='dm_archived_by',
+        help_text="User who archived direct chat.",
+    )
     is_locked = models.BooleanField(
         default=False,
         help_text="When locked, only admins/owners may send messages (plus send_policy).",
+    )
+    locked_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='dm_locked_by',
+        help_text="User who locked direct chat.",
     )
 
     # Denormalized activity metadata for fast chat list queries
@@ -150,6 +171,9 @@ class Conversation(models.Model):
         indexes = [
             models.Index(fields=['type', 'created_at']),
             models.Index(fields=['is_archived', 'last_message_at']),
+            # Helpful for DM request inbox queries
+            models.Index(fields=['request_recipient', 'request_state']),
+            models.Index(fields=['request_initiator', 'request_state']),
         ]
 
     def __str__(self) -> str:

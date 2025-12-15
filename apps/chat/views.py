@@ -1,10 +1,14 @@
 # chat/views.py
+from django.conf import settings
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
+from django.db import DatabaseError
 
 from rest_framework import viewsets, mixins, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError, PermissionDenied
 
 from .models import (
     Conversation,
@@ -24,31 +28,114 @@ from .serializers import (
     ConversationSettingsSerializer,
     MessageThreadLinkSerializer,
 )
-from .permissions import IsConversationMember  # currently unused but kept
 from .services import get_or_create_direct_conversation, user_is_active_member
+
+from apps.accounts.models import User
+
+
+def _extract_phone_participants(raw_data) -> list[str]:
+    """
+    Accepts flexible shapes from RN:
+      - participants: ["+237..."]
+      - user_id: { participants: ["+237..."] }
+      - user_id: { participant: ["+237..."] }
+    Returns list of normalized phone strings.
+    """
+    participants = []
+
+    user_id_block = raw_data.get("user_id") or {}
+    if isinstance(user_id_block, dict):
+        participants = user_id_block.get("participant") or []
+        if not participants:
+            participants = user_id_block.get("participants") or []
+
+    if not participants:
+        participants = raw_data.get("participants") or []
+
+    if not isinstance(participants, (list, tuple)):
+        participants = []
+
+    phones = []
+    for p in participants:
+        if p is None:
+            continue
+        s = str(p).strip()
+        if s:
+            phones.append(s)
+
+    # unique preserve order
+    seen = set()
+    out = []
+    for ph in phones:
+        if ph not in seen:
+            seen.add(ph)
+            out.append(ph)
+    return out
+
+
+def _resolve_peer_user(request_user: User, raw_data: dict) -> User:
+    """
+    Resolves the peer user for a direct chat.
+    Priority:
+      1) peer_user_id (if provided)
+      2) first phone number in participants payload
+    """
+    peer_user_id = raw_data.get("peer_user_id")
+    if peer_user_id is not None:
+        try:
+            peer_id = int(peer_user_id)
+        except Exception:
+            raise ValidationError({"peer_user_id": "peer_user_id must be an integer"})
+
+        if peer_id == request_user.id:
+            raise ValidationError({"peer_user_id": "Cannot create a direct chat with yourself."})
+
+        try:
+            return User.objects.get(id=peer_id)
+        except User.DoesNotExist:
+            raise ValidationError({"peer_user_id": "Peer user does not exist."})
+
+    phones = _extract_phone_participants(raw_data)
+    if not phones:
+        raise ValidationError(
+            "Either 'peer_user_id' or at least one participant phone number is required."
+        )
+
+    # For direct chat, use the first phone only
+    first_phone = phones[0]
+    try:
+        peer = User.objects.get(phone=first_phone)
+    except User.DoesNotExist:
+        raise ValidationError({"participants": f"User with phone number {first_phone} does not exist."})
+
+    if peer.id == request_user.id:
+        raise ValidationError({"participants": "Cannot create a direct chat with yourself."})
+
+    return peer
 
 
 class ConversationViewSet(viewsets.ModelViewSet):
     """
     /api/chat/conversations/
 
-    - list: all conversations for the authenticated user
-    - retrieve: details (members, settings)
-    - create: create a group/channel/thread conversation
-    - direct: (custom action) create or fetch a 1:1 direct conversation
-    - accept-request: accept a pending direct message request
-    - reject-request: reject a pending direct message request
+    - list/retrieve/create/update
+    - direct: create/fetch 1:1 DM using request workflow
+    - accept-request / reject-request
+    - update-last-message: internal endpoint called by Nest
     """
     permission_classes = [IsAuthenticated]
 
+    # ------------------------------------------------------------------
+    # Query / serializers
+    # ------------------------------------------------------------------
     def get_queryset(self):
         user = self.request.user
         return (
             Conversation.objects
             .filter(memberships__user=user, memberships__left_at__isnull=True)
             .distinct()
-            .select_related('created_by')
-            .prefetch_related('memberships__user')
+            .select_related('created_by', 'request_initiator', 'request_recipient')
+            .prefetch_related('memberships__user', 'memberships')  # memberships itself too
         )
 
     def get_serializer_class(self):
@@ -61,245 +148,190 @@ class ConversationViewSet(viewsets.ModelViewSet):
         return ConversationDetailSerializer
 
     def perform_create(self, serializer):
-        # ConversationCreateSerializer sets created_by and membership
         serializer.save()
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
-        # Ensure membership
         if not user_is_active_member(request.user, instance):
             return Response(
                 {"detail": "You are not a member of this conversation."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        serializer = self.get_serializer(instance)
-        return Response(serializer.data)
+        return Response(self.get_serializer(instance).data)
 
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Direct conversations (DM request flow)
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
     @action(detail=False, methods=['post'], url_path='direct')
-    def direct(self, request, *args, **kwargs):
+    def direct(self, request):
         """
-        POST /api/chat/conversations/direct/
-        {
-          "peer_user_id": 123
-        }
+        POST /api/v1/conversations/direct/
 
-        Returns the existing or newly-created direct conversation between
-        request.user and the peer.
+        Supports:
+          - {"peer_user_id": 123}
+          - {"participants": ["+237..."], "user_id": {"participants": ["+237..."]}, ...}
 
-        If no conversation exists yet, a new one is created as a *pending
-        direct message request*:
-
-          - type = DIRECT
-          - request_state = PENDING
-          - request_initiator = request.user
-          - request_recipient = peer_user
-
-        The actual enforcement of "initiator can only send first message"
-        is handled on the message service (NestJS) side.
+        If new, it creates a pending DM request:
+          - request_state=PENDING
+          - request_initiator=request.user
+          - request_recipient=peer_user
         """
+        # Still validate basic shape using your serializer (keeps compatibility),
+        # but we also support phone payloads.
         serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        serializer.is_valid(raise_exception=False)  # do not hard fail; we resolve ourselves
 
-        peer_user_id = serializer.validated_data['peer_user_id']
-        from apps.accounts.models import User
-        peer_user = User.objects.get(id=peer_user_id)
+        peer_user = _resolve_peer_user(request.user, request.data)
 
         conversation, created = get_or_create_direct_conversation(
             user_a=request.user,
             user_b=peer_user,
             initiator=request.user,
+            use_request_flow=True,
         )
 
-        detail_serializer = ConversationDetailSerializer(conversation)
-        status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
-        return Response(detail_serializer.data, status=status_code)
+        # Safety: ensure requester is actually a member (should always be true)
+        if not user_is_active_member(request.user, conversation):
+            # This indicates corrupted state; better to fail loudly than create ghost conversations.
+            raise PermissionDenied("You are not a member of this conversation.")
 
-    # ---------------------------------------------------------------------
-    # Membership management
-    # ---------------------------------------------------------------------
+        data = ConversationDetailSerializer(conversation).data
+        return Response(
+            data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    # ------------------------------------------------------------------
+    # Members
+    # ------------------------------------------------------------------
     @action(detail=True, methods=['post'], url_path='members')
     def add_member(self, request, pk=None):
-        """
-        POST /api/chat/conversations/{id}/members/
-        {
-          "user_id": 123,
-          "base_role": "member"
-        }
-
-        Adds a user to the conversation. Permission checks can be expanded
-        using RBAC and RoleDefinition in future.
-        """
         conversation = self.get_object()
-        # Basic check: must be an active member to add others
         if not user_is_active_member(request.user, conversation):
-            return Response(
-                {"detail": "You are not a member of this conversation."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            return Response({"detail": "You are not a member of this conversation."}, status=403)
 
         user_id = request.data.get('user_id')
         base_role = request.data.get('base_role', BaseConversationRole.MEMBER)
 
-        from apps.accounts.models import User
         try:
             user = User.objects.get(id=user_id)
         except User.DoesNotExist:
-            return Response(
-                {"detail": "User does not exist."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "User does not exist."}, status=400)
 
         member, created = ConversationMember.objects.get_or_create(
             conversation=conversation,
             user=user,
             defaults={'base_role': base_role},
         )
-        if not created:
-            # Re-activate if previously left
-            if member.left_at is not None:
-                member.left_at = None
+
+        if not created and member.left_at:
+            member.left_at = None
             member.base_role = base_role
-            member.save()
+            member.save(update_fields=["left_at", "base_role"])
 
-        ser = ConversationMemberSerializer(member)
-        return Response(ser.data, status=status.HTTP_201_CREATED)
+        return Response(ConversationMemberSerializer(member).data, status=201)
 
-    # ---------------------------------------------------------------------
-    # Conversation settings
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Settings
+    # ------------------------------------------------------------------
     @action(detail=True, methods=['patch'], url_path='settings')
     def update_settings(self, request, pk=None):
-        """
-        PATCH /api/chat/conversations/{id}/settings/
-        Body: any subset of ConversationSettings fields.
-        """
         conversation = self.get_object()
         if not user_is_active_member(request.user, conversation):
-            return Response(
-                {"detail": "You are not a member of this conversation."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            return Response({"detail": "You are not a member of this conversation."}, status=403)
 
-        settings_obj, _ = ConversationSettings.objects.get_or_create(
-            conversation=conversation
-        )
-        serializer = ConversationSettingsSerializer(
-            settings_obj,
-            data=request.data,
-            partial=True,
-        )
+        settings_obj, _ = ConversationSettings.objects.get_or_create(conversation=conversation)
+        serializer = ConversationSettingsSerializer(settings_obj, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
 
-    # ---------------------------------------------------------------------
-    # Direct message request: accept / reject
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # DM request accept / reject
+    # ------------------------------------------------------------------
     @action(detail=True, methods=['post'], url_path='accept-request')
     def accept_request(self, request, pk=None):
-        """
-        POST /api/chat/conversations/{id}/accept-request/
-
-        Used by the recipient of a direct message request to accept it.
-        After acceptance, the conversation behaves like a normal direct chat.
-        """
         conversation = self.get_object()
 
         if conversation.type != ConversationType.DIRECT:
-            return Response(
-                {"detail": "Only direct conversations use the request workflow."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+            return Response({"detail": "Not a direct conversation"}, status=400)
         if conversation.request_state != ConversationRequestState.PENDING:
-            return Response(
-                {"detail": "This conversation is not in pending state."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Only the designated recipient may accept
+            return Response({"detail": "Not pending"}, status=400)
         if conversation.request_recipient_id != request.user.id:
-            return Response(
-                {"detail": "You are not the recipient of this request."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            return Response({"detail": "Not recipient"}, status=403)
 
         conversation.request_state = ConversationRequestState.ACCEPTED
         conversation.request_accepted_at = timezone.now()
         conversation.save(update_fields=['request_state', 'request_accepted_at'])
 
-        ser = ConversationDetailSerializer(conversation)
-        return Response(ser.data, status=status.HTTP_200_OK)
+        return Response(ConversationDetailSerializer(conversation).data, status=200)
 
-    @action(detail=True, methods=['post'], url_path='reject-request')
-    def reject_request(self, request, pk=None):
-        """
-        POST /api/chat/conversations/{id}/reject-request/
-
-        Used by the recipient of a direct message request to reject it.
-        You can also extend this to block the sender at the membership/RBAC level.
-        """
-        conversation = self.get_object()
-
+    @action(detail=True, methods=['get'], url_path='block_chat')
+    def block_chat(self, request, pk=None):
+        conversation = Conversation.objects.get(pk=pk)
         if conversation.type != ConversationType.DIRECT:
-            return Response(
-                {"detail": "Only direct conversations use the request workflow."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "Not a direct conversation"}, status=400)
+        conversation.is_locked = True
+        conversation.locked_by = request.user
+        conversation.save(update_fields=['is_locked', 'locked_by'])
+        response = ConversationDetailSerializer(conversation).data
+        print("see Response: ", response)
+        return Response(response, status=200)
 
-        if conversation.request_state != ConversationRequestState.PENDING:
-            return Response(
-                {"detail": "This conversation is not in pending state."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+    # ------------------------------------------------------------------
+    # 🔐 INTERNAL: last-message update (called by NestJS)
+    # ------------------------------------------------------------------
+    @action(
+        detail=True,
+        methods=['patch'],
+        url_path='update-last-message',
+        permission_classes=[],  # internal only
+        authentication_classes=[],
+    )
+    def update_last_message(self, request, pk=None):
+       
+        try:
+            conversation = Conversation.objects.get(pk=pk)
+        except Conversation.DoesNotExist:
+            return Response({"detail": "Not found"}, status=404)
 
-        if conversation.request_recipient_id != request.user.id:
-            return Response(
-                {"detail": "You are not the recipient of this request."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        incoming_at = request.data.get('last_message_at')
+        preview = (request.data.get('last_message_preview') or '')[:255]
 
-        conversation.request_state = ConversationRequestState.REJECTED
-        conversation.request_rejected_at = timezone.now()
-        conversation.save(update_fields=['request_state', 'request_rejected_at'])
+        if not incoming_at:
+            return Response({"detail": "last_message_at required"}, status=400)
 
-        # OPTIONAL: also block the initiator in this conversation
-        # try:
-        #     initiator_member = conversation.memberships.get(
-        #         user_id=conversation.request_initiator_id
-        #     )
-        #     initiator_member.is_blocked = True
-        #     initiator_member.save(update_fields=['is_blocked'])
-        # except ConversationMember.DoesNotExist:
-        #     pass
+        dt = parse_datetime(incoming_at)
+        if not dt:
+            return Response({"detail": "Invalid datetime"}, status=400)
 
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        if timezone.is_naive(dt):
+            dt = timezone.make_aware(dt, timezone=timezone.utc)
 
+        if conversation.last_message_at and dt < conversation.last_message_at:
+            return Response({"ok": True, "ignored": True})
 
+        print("checking data:", request.data, "pk:", pk)
+        conversation.last_message_at = dt
+        conversation.last_message_preview = preview
+        conversation.save(update_fields=['last_message_at', 'last_message_preview'])
+
+        return Response({"ok": True})
+
+# ----------------------------------------------------------------------
+# Threads
+# ----------------------------------------------------------------------
 class MessageThreadLinkViewSet(
     mixins.CreateModelMixin,
     mixins.RetrieveModelMixin,
     viewsets.GenericViewSet,
 ):
-    """
-    /api/chat/threads/
-
-    Used to create and inspect thread links:
-    - parent_conversation + parent_message_key -> child_conversation
-    """
     queryset = MessageThreadLink.objects.all()
     serializer_class = MessageThreadLinkSerializer
     permission_classes = [IsAuthenticated]
 
     def perform_create(self, serializer):
-        # Ensure user is member of parent_conversation
-        parent_conversation = serializer.validated_data['parent_conversation']
-        request = self.request
-        if not user_is_active_member(request.user, parent_conversation):
-            from rest_framework.exceptions import PermissionDenied
-            raise PermissionDenied("You are not a member of the parent conversation.")
-
-        serializer.save(created_by=request.user)
+        parent = serializer.validated_data['parent_conversation']
+        if not user_is_active_member(self.request.user, parent):
+            raise PermissionDenied("Not a member")
+        serializer.save(created_by=self.request.user)

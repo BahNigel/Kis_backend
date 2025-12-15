@@ -72,12 +72,17 @@ class ConversationListSerializer(serializers.ModelSerializer):
 
     - `participants` now includes full user info via ConversationMemberSerializer.
     """
+
     last_message_at = serializers.DateTimeField(allow_null=True)
     participants = ConversationMemberSerializer(
         source="memberships",
         many=True,
         read_only=True,
     )
+
+    # DM request initiator / recipient as nested users
+    request_initiator = UserSerializer(read_only=True)
+    request_recipient = UserSerializer(read_only=True)
 
     class Meta:
         model = Conversation
@@ -115,6 +120,9 @@ class ConversationDetailSerializer(serializers.ModelSerializer):
         many=True,
         read_only=True,
     )
+
+    request_initiator = UserSerializer(read_only=True)
+    request_recipient = UserSerializer(read_only=True)
 
     class Meta:
         model = Conversation
@@ -165,28 +173,6 @@ class ConversationCreateSerializer(serializers.ModelSerializer):
     Used for creating new group/channel/thread conversations from Django side.
 
     Direct conversations (1:1) use a separate serializer below.
-
-    Expected payload examples (flexible):
-
-    {
-      "type": "group",
-      "title": "Worship Team",
-      "description": "...",
-      "user_id": {
-        "participant": ["+2376...", "+2376..."]
-      }
-    }
-
-    or
-
-    {
-      "type": "group",
-      "title": "Worship Team",
-      "participants": ["+2376...", "+2376..."]
-    }
-
-    Extra metadata fields (like `client_context`) are ignored by this serializer
-    but will still be available on `request.data` if the view wants them.
     """
 
     # Accept flexible participant payload so DRF doesn’t reject the request
@@ -296,39 +282,6 @@ class ConversationCreateSerializer(serializers.ModelSerializer):
 class DirectConversationCreateSerializer(serializers.Serializer):
     """
     Payload for creating/fetching a direct 1:1 conversation.
-
-    Supports two input styles:
-
-    1) Legacy:
-       {
-         "peer_user_id": 123
-       }
-
-    2) Phone-based (what the React Native app is sending now):
-       {
-         "type": "direct",
-         "title": "Anna",
-         "last_message_preview": "Hey there",
-         "participants": ["+2376..."],
-
-         "user_id": {
-             "participant": ["+2376..."]   # OR
-             "participants": ["+2376..."]
-         },
-
-         "client_context": {
-             "temp_chat_id": "contact-+2376...",
-             "source": "mobile"
-         }
-       }
-
-    This serializer normalizes everything into a single `peer_user_id`
-    in `validated_data`, so your view code can keep using
-    `validated_data["peer_user_id"]` as before.
-
-    Extra fields like `type`, `title`, `last_message_preview`,
-    `client_context` are accepted and passed through for the view
-    to optionally use when creating the Conversation.
     """
 
     # Optional, for legacy / direct ID usage
@@ -456,6 +409,66 @@ class DirectConversationCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError("Peer user does not exist.")
 
         return value
+    
+    def create(self, validated_data):
+        from apps.accounts.models import User
+        from .models import (
+            Conversation,
+            ConversationMember,
+            ConversationSettings,
+            ConversationType,
+            ConversationRequestState,
+            BaseConversationRole,
+        )
+
+        request = self.context["request"]
+        user: User = request.user
+        peer_user_id = validated_data["peer_user_id"]
+        peer_user = User.objects.get(id=peer_user_id)
+
+        # 1) If a direct conversation between these 2 users already exists, reuse it
+        existing = (
+            Conversation.objects.filter(
+                type=ConversationType.DIRECT,
+                memberships__user=user,
+            )
+            .filter(memberships__user=peer_user)
+            .distinct()
+            .first()
+        )
+        if existing:
+            return existing
+
+        # 2) Otherwise create a new direct conversation
+        print("thids is working Nigel 88888888888888888888888888888888888888cs")
+        conv = Conversation.objects.create(
+            type=ConversationType.DIRECT,
+            created_by=user,
+            # ✅ DM request fields – creator is initiator, peer is recipient
+            request_state=ConversationRequestState.PENDING,
+            request_initiator=user,
+            request_recipient=peer_user,
+            # optional title/preview if you like:
+            # title=f"{user.display_name} & {peer_user.display_name}",
+            # last_message_preview="",
+        )
+
+        # 3) Create memberships
+        ConversationMember.objects.create(
+            conversation=conv,
+            user=user,
+            base_role=BaseConversationRole.OWNER,
+        )
+        ConversationMember.objects.create(
+            conversation=conv,
+            user=peer_user,
+            base_role=BaseConversationRole.MEMBER,
+        )
+
+        # 4) Default settings row
+        ConversationSettings.objects.create(conversation=conv)
+
+        return conv
 
 
 # ---------------------------------------------------------------------------

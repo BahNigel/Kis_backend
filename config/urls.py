@@ -11,6 +11,9 @@ from rest_framework_simplejwt.views import (
     TokenVerifyView,       # POST: { token } -> {} if valid
 )
 
+from django.conf import settings
+from django.conf.urls.static import static
+
 urlpatterns = [
     path("admin/", admin.site.urls),
 
@@ -34,6 +37,7 @@ urlpatterns = [
     path("api/v1/", include("apps.communities.urls", namespace="communities")),
     path("api/v1/", include("apps.groups.urls", namespace="groups")),
     path("api/v1/", include("apps.channels.urls", namespace="channels")),
+    path("api/v1/", include("apps.background_removal.urls")),
 
     # --- JWT auth endpoints (SimpleJWT) ---
     # Obtain access/refresh with username/password
@@ -54,3 +58,6 @@ urlpatterns = [
 
     path("api/v1/chat/", include("apps.chat.urls", namespace="chat")),
 ]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

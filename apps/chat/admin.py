@@ -56,6 +56,12 @@ class ConversationAdmin(admin.ModelAdmin):
         "is_locked",
         "last_message_at",
         "created_at",
+        "request_state",
+        "request_initiator",
+        "request_recipient",
+        "request_accepted_at",
+        "request_rejected_at",
+        "last_message_preview",
     )
     list_filter = (
         "type",

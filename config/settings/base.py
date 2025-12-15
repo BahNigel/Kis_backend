@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     "django_extensions",
     "django_celery_beat",
     "django_celery_results",
+    "django_filters",  # NEW: needed for DjangoFilterBackend
 
     # Local apps
     "apps.accounts.apps.AccountsConfig",
@@ -57,8 +58,9 @@ INSTALLED_APPS = [
     "apps.analytics.apps.AnalyticsConfig",
     "apps.tiers.apps.TiersConfig",
     "apps.otp.apps.OtpConfig",
+    "apps.background_removal.apps.BackgroundRemovalConfig",
 
-    #chats
+    # chats
     "apps.chat.apps.ChatConfig",
     "apps.partners.apps.PartnersConfig",
     "apps.communities.apps.CommunitiesConfig",
@@ -112,7 +114,10 @@ DATABASES = {
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator", "OPTIONS": {"min_length": 10}},
+    {
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {"min_length": 10},
+    },
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
@@ -211,12 +216,19 @@ CACHES = {
     }
 }
 
-# Celery settings (optional; configured in production)
+# Celery settings
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
+
+# NEW: media-service URL for background removal microservice
+# This is what your Celery task uses to call the external service.
+MEDIA_SERVICE_URL = os.environ.get(
+    "MEDIA_SERVICE_URL",
+    "http://localhost:9000/process/background-removal",
+)
 
 # Logging - keep it verbose for dev, JSON-friendly for prod
 LOGGING = {
