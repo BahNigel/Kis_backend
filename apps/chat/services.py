@@ -2,6 +2,8 @@
 from typing import Tuple, Optional
 
 from django.db import transaction
+from django.db.models import F
+
 
 from apps.accounts.models import User
 from .models import (
@@ -124,3 +126,23 @@ def user_is_active_member(user: User, conversation: Conversation) -> bool:
         left_at__isnull=True,
         is_blocked=False,
     ).exists()
+
+
+
+def allocate_conversation_seq(conversation: Conversation) -> int:
+    """
+    Atomically allocates the next conversation sequence number.
+    GUARANTEES:
+      - strictly increasing
+      - unique per conversation
+      - safe under concurrency
+    """
+    with transaction.atomic():
+        Conversation.objects.filter(
+            id=conversation.id
+        ).update(
+            last_message_seq=F('last_message_seq') + 1
+        )
+
+        conversation.refresh_from_db(fields=['last_message_seq'])
+        return conversation.last_message_seq

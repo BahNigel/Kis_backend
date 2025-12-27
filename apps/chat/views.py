@@ -4,6 +4,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.db import DatabaseError
 
+from .internal_auth import require_internal_auth
 from rest_framework import viewsets, mixins, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -28,7 +29,7 @@ from .serializers import (
     ConversationSettingsSerializer,
     MessageThreadLinkSerializer,
 )
-from .services import get_or_create_direct_conversation, user_is_active_member
+from .services import allocate_conversation_seq, get_or_create_direct_conversation, user_is_active_member
 
 from apps.accounts.models import User
 
@@ -266,7 +267,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
 
         return Response(ConversationDetailSerializer(conversation).data, status=200)
 
-    @action(detail=True, methods=['get'], url_path='block_chat')
+    @action(detail=True, methods=['post'], url_path='block_chat')
     def block_chat(self, request, pk=None):
         conversation = Conversation.objects.get(pk=pk)
         if conversation.type != ConversationType.DIRECT:
@@ -285,11 +286,12 @@ class ConversationViewSet(viewsets.ModelViewSet):
         detail=True,
         methods=['patch'],
         url_path='update-last-message',
-        permission_classes=[],  # internal only
+        permission_classes=[],
         authentication_classes=[],
     )
     def update_last_message(self, request, pk=None):
-       
+        require_internal_auth(request)
+
         try:
             conversation = Conversation.objects.get(pk=pk)
         except Conversation.DoesNotExist:
@@ -311,12 +313,79 @@ class ConversationViewSet(viewsets.ModelViewSet):
         if conversation.last_message_at and dt < conversation.last_message_at:
             return Response({"ok": True, "ignored": True})
 
-        print("checking data:", request.data, "pk:", pk)
         conversation.last_message_at = dt
         conversation.last_message_preview = preview
         conversation.save(update_fields=['last_message_at', 'last_message_preview'])
 
         return Response({"ok": True})
+
+
+    @action(
+        detail=True,
+        methods=['post'],
+        url_path='allocate-seq',
+        permission_classes=[],
+        authentication_classes=[],
+    )
+    def allocate_seq(self, request, pk=None):
+        require_internal_auth(request)
+
+        try:
+            conversation = Conversation.objects.get(pk=pk)
+        except Conversation.DoesNotExist:
+            return Response({"detail": "Not found"}, status=404)
+
+        seq = allocate_conversation_seq(conversation)
+
+        return Response({"seq": seq})
+
+    
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='ws-perms',
+        permission_classes=[],
+        authentication_classes=[],
+    )
+    def ws_perms(self, request, pk=None):
+        require_internal_auth(request)
+
+        user_id = request.query_params.get("userId")
+        if not user_id:
+            return Response({"isMember": False, "isBlocked": False, "role": "member", "scopes": []})
+
+        try:
+            conversation = Conversation.objects.get(pk=pk)
+        except Conversation.DoesNotExist:
+            return Response({"isMember": False, "isBlocked": False, "role": "member", "scopes": []})
+
+        member = ConversationMember.objects.filter(
+            conversation=conversation,
+            user_id=user_id,
+            left_at__isnull=True,
+        ).first()
+
+        if not member:
+            return Response({"isMember": False, "isBlocked": False, "role": "member", "scopes": []})
+
+        if member.is_blocked:
+            return Response({"isMember": True, "isBlocked": True, "role": member.base_role, "scopes": []})
+
+        if conversation.type == ConversationType.DIRECT and conversation.request_state == ConversationRequestState.PENDING:
+            return Response({"isMember": True, "isBlocked": True, "role": member.base_role, "scopes": []})
+
+        scopes = []
+        if member.base_role in (BaseConversationRole.OWNER, BaseConversationRole.ADMIN):
+            scopes.append("chat:admin")
+
+        return Response({
+            "isMember": True,
+            "isBlocked": False,
+            "role": member.base_role,
+            "scopes": scopes,
+        })
+
+
 
 # ----------------------------------------------------------------------
 # Threads

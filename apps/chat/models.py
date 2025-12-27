@@ -67,6 +67,11 @@ class Conversation(models.Model):
         db_index=True,
     )
 
+    last_message_seq = models.BigIntegerField(
+        default=0,
+        help_text="Monotonic sequence counter for messages in this conversation.",
+    )
+
     title = models.CharField(
         max_length=255,
         blank=True,
