@@ -234,6 +234,74 @@ class ConversationViewSet(viewsets.ModelViewSet):
 
         return Response(ConversationMemberSerializer(member).data, status=201)
 
+    @action(detail=True, methods=['post'], url_path='members/remove')
+    def remove_member(self, request, pk=None):
+        conversation = self.get_object()
+        if not user_is_active_member(request.user, conversation):
+            return Response({"detail": "You are not a member of this conversation."}, status=403)
+
+        user_id = request.data.get('user_id')
+        if not user_id:
+            return Response({"detail": "user_id is required."}, status=400)
+
+        requester = ConversationMember.objects.filter(
+            conversation=conversation,
+            user=request.user,
+            left_at__isnull=True,
+        ).first()
+        if not requester:
+            return Response({"detail": "You are not a member of this conversation."}, status=403)
+
+        is_admin = requester.base_role in (BaseConversationRole.OWNER, BaseConversationRole.ADMIN)
+        if not is_admin and str(user_id) != str(request.user.id):
+            return Response({"detail": "Only admins can remove other members."}, status=403)
+
+        member = ConversationMember.objects.filter(
+            conversation=conversation,
+            user_id=user_id,
+            left_at__isnull=True,
+        ).first()
+        if not member:
+            return Response({"detail": "Member not found."}, status=404)
+
+        member.left_at = timezone.now()
+        member.save(update_fields=["left_at"])
+        return Response(ConversationMemberSerializer(member).data, status=200)
+
+    @action(detail=True, methods=['post'], url_path='members/role')
+    def set_member_role(self, request, pk=None):
+        conversation = self.get_object()
+        if not user_is_active_member(request.user, conversation):
+            return Response({"detail": "You are not a member of this conversation."}, status=403)
+
+        user_id = request.data.get('user_id')
+        base_role = request.data.get('base_role')
+        if not user_id or not base_role:
+            return Response({"detail": "user_id and base_role are required."}, status=400)
+
+        requester = ConversationMember.objects.filter(
+            conversation=conversation,
+            user=request.user,
+            left_at__isnull=True,
+        ).first()
+        if not requester or requester.base_role not in (BaseConversationRole.OWNER, BaseConversationRole.ADMIN):
+            return Response({"detail": "Only admins can change roles."}, status=403)
+
+        if base_role not in BaseConversationRole.values:
+            return Response({"detail": "Invalid base_role."}, status=400)
+
+        member = ConversationMember.objects.filter(
+            conversation=conversation,
+            user_id=user_id,
+            left_at__isnull=True,
+        ).first()
+        if not member:
+            return Response({"detail": "Member not found."}, status=404)
+
+        member.base_role = base_role
+        member.save(update_fields=["base_role"])
+        return Response(ConversationMemberSerializer(member).data, status=200)
+
     # ------------------------------------------------------------------
     # Settings
     # ------------------------------------------------------------------
