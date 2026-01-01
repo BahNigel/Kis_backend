@@ -1,4 +1,5 @@
 # chat/views.py
+import os
 from django.conf import settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -10,6 +11,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError, PermissionDenied
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from .models import (
     Conversation,
@@ -352,6 +354,22 @@ class ConversationViewSet(viewsets.ModelViewSet):
 
         user_id = request.query_params.get("userId")
         if not user_id:
+            auth_header = request.headers.get("Authorization", "")
+            scheme = os.environ.get("DJANGO_AUTH_SCHEME", "Bearer").strip()
+            prefix = f"{scheme} "
+            if auth_header.startswith(prefix):
+                token = auth_header[len(prefix):].strip()
+                if token:
+                    try:
+                        jwt_auth = JWTAuthentication()
+                        validated = jwt_auth.get_validated_token(token)
+                        user = jwt_auth.get_user(validated)
+                        if user and user.is_active:
+                            user_id = str(user.id)
+                    except Exception:
+                        # Internal callers sometimes pass userId as the bearer token.
+                        user_id = token
+        if not user_id:
             return Response({"isMember": False, "isBlocked": False, "role": "member", "scopes": []})
 
         try:
@@ -371,8 +389,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
         if member.is_blocked:
             return Response({"isMember": True, "isBlocked": True, "role": member.base_role, "scopes": []})
 
-        if conversation.type == ConversationType.DIRECT and conversation.request_state == ConversationRequestState.PENDING:
-            return Response({"isMember": True, "isBlocked": True, "role": member.base_role, "scopes": []})
+        # Allow messaging during pending direct requests (frontend handles UX)
 
         scopes = []
         if member.base_role in (BaseConversationRole.OWNER, BaseConversationRole.ADMIN):
