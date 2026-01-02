@@ -4,6 +4,7 @@ from django.conf import settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.db import DatabaseError
+from django.db.models import Q
 
 from .internal_auth import require_internal_auth
 from rest_framework import viewsets, mixins, status
@@ -133,13 +134,23 @@ class ConversationViewSet(viewsets.ModelViewSet):
     # ------------------------------------------------------------------
     def get_queryset(self):
         user = self.request.user
-        return (
+        qs = (
             Conversation.objects
             .filter(memberships__user=user, memberships__left_at__isnull=True)
             .distinct()
             .select_related('created_by', 'request_initiator', 'request_recipient')
             .prefetch_related('memberships__user', 'memberships')  # memberships itself too
         )
+        q = (self.request.query_params.get('q') or self.request.query_params.get('search') or '').strip()
+        if q:
+            qs = qs.filter(
+                Q(title__icontains=q)
+                | Q(description__icontains=q)
+                | Q(memberships__user__display_name__icontains=q)
+                | Q(memberships__user__phone__icontains=q)
+                | Q(memberships__user__username__icontains=q)
+            ).distinct()
+        return qs
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -349,9 +360,57 @@ class ConversationViewSet(viewsets.ModelViewSet):
         print("see Response: ", response)
         return Response(response, status=200)
 
+    @action(detail=True, methods=['post'], url_path='archive')
+    def archive(self, request, pk=None):
+        conversation = self.get_object()
+        if not user_is_active_member(request.user, conversation):
+            return Response({"detail": "You are not a member of this conversation."}, status=403)
+
+        archived = request.data.get('archived', True)
+        conversation.is_archived = bool(archived)
+        conversation.archived_by = request.user if archived else None
+        conversation.save(update_fields=['is_archived', 'archived_by'])
+        return Response(ConversationDetailSerializer(conversation).data, status=200)
+
+    @action(detail=True, methods=['post'], url_path='lock')
+    def lock(self, request, pk=None):
+        conversation = self.get_object()
+        if not user_is_active_member(request.user, conversation):
+            return Response({"detail": "You are not a member of this conversation."}, status=403)
+
+        locked = request.data.get('locked', True)
+        conversation.is_locked = bool(locked)
+        conversation.locked_by = request.user if locked else None
+        conversation.save(update_fields=['is_locked', 'locked_by'])
+        return Response(ConversationDetailSerializer(conversation).data, status=200)
+
     # ------------------------------------------------------------------
     # 🔐 INTERNAL: last-message update (called by NestJS)
     # ------------------------------------------------------------------
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='member-ids',
+        permission_classes=[],
+        authentication_classes=[],
+    )
+    def member_ids(self, request, pk=None):
+        require_internal_auth(request)
+
+        try:
+            conversation = Conversation.objects.get(pk=pk)
+        except Conversation.DoesNotExist:
+            return Response({"detail": "Not found"}, status=404)
+
+        member_ids = list(
+            ConversationMember.objects.filter(
+                conversation=conversation,
+                left_at__isnull=True,
+            ).values_list('user_id', flat=True)
+        )
+
+        return Response({"member_ids": [str(mid) for mid in member_ids]})
+
     @action(
         detail=True,
         methods=['patch'],
