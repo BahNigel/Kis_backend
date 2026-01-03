@@ -230,6 +230,16 @@ MEDIA_SERVICE_URL = os.environ.get(
     "http://localhost:9000/process/background-removal",
 )
 
+# NestJS internal webhook base + token for realtime event fanout
+NEST_INTERNAL_URL = os.environ.get(
+    "NEST_INTERNAL_URL",
+    "http://127.0.0.1:4000/internal",
+)
+NEST_INTERNAL_TOKEN = os.environ.get(
+    "NEST_INTERNAL_TOKEN",
+    os.environ.get("DJANGO_INTERNAL_TOKEN", ""),
+)
+
 # Logging - keep it verbose for dev, JSON-friendly for prod
 LOGGING = {
     "version": 1,

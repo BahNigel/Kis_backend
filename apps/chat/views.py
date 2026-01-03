@@ -468,6 +468,30 @@ class ConversationViewSet(viewsets.ModelViewSet):
 
         return Response({"seq": seq})
 
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='member-ids',
+        permission_classes=[],
+        authentication_classes=[],
+    )
+    def member_ids(self, request, pk=None):
+        require_internal_auth(request)
+
+        try:
+            conversation = Conversation.objects.get(pk=pk)
+        except Conversation.DoesNotExist:
+            return Response({"user_ids": []}, status=404)
+
+        user_ids = list(
+            ConversationMember.objects.filter(
+                conversation=conversation,
+                left_at__isnull=True,
+                is_blocked=False,
+            ).values_list("user_id", flat=True)
+        )
+        return Response({"user_ids": [str(uid) for uid in user_ids]})
+
     
     @action(
         detail=True,

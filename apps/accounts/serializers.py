@@ -308,33 +308,47 @@ class LoginSerializer(serializers.Serializer):
     country = serializers.CharField(write_only=True, default="CM", required=False)
 
     def validate(self, attrs):
-        phone_raw = attrs.get("phone") or ""
+        phone_raw = (attrs.get("phone") or "").strip()
         password = attrs.get("password") or ""
         country = (attrs.get("country") or "CM").upper()
-
-        try:
-            phone_e164 = to_e164(phone_raw, default_region=country)
-        except Exception:
-            raise serializers.ValidationError({"detail": _("Invalid phone number format.")})
 
         # Prefer passing a Django HttpRequest to auth backends
         req = self.context.get("request")
         if hasattr(req, "_request"):
             req = req._request
 
-        # 1) Try E.164 (future-proof)
-        user = authenticate(request=req, username=str(phone_e164), password=password)
+        if not phone_raw or not password:
+            raise serializers.ValidationError({"detail": _("Phone and password are required.")})
 
-        # 2) Legacy fallback (numbers saved without +country)
+        # 1) Let the auth backend handle phone/email normalization.
+        user = authenticate(request=req, username=phone_raw, password=password)
+
+        # 2) Legacy fallback (numbers saved without +country or separators)
         if user is None:
             digits_only = ''.join(ch for ch in phone_raw if ch.isdigit())
-            if digits_only and digits_only != phone_e164:
+            if digits_only and digits_only != phone_raw:
                 user = authenticate(request=req, username=digits_only, password=password)
+
+        # 3) E.164 fallback (for clients that send national digits + country)
+        phone_e164 = None
+        if user is None:
+            try:
+                phone_e164 = to_e164(phone_raw, default_region=country)
+            except Exception:
+                phone_e164 = None
+            if phone_e164:
+                user = authenticate(request=req, username=str(phone_e164), password=password)
 
         if user is None:
             raise serializers.ValidationError({"detail": _("Invalid credentials.")})
         if not user.is_active:
             raise serializers.ValidationError({"detail": _("User account is disabled.")})
+
+        if not phone_e164:
+            try:
+                phone_e164 = to_e164(user.phone or phone_raw, default_region=(user.country or country))
+            except Exception:
+                phone_e164 = user.phone or phone_raw
 
         attrs["user"] = user
         attrs["phone_e164"] = phone_e164
