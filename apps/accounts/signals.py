@@ -17,6 +17,7 @@ from .models import (
     ApiToken,
     Subscription,
     AuditLog,
+    ProfilePreferences,
 )
 
 AUDIT_MODELS = (User, Profile, ApiToken, Subscription, AccountTier)
@@ -45,11 +46,17 @@ def create_profile_and_quota(sender, instance: User, created: bool, **kwargs):
                 last_reset_at=timezone.now(),
             )
 
+        if not ProfilePreferences.objects.filter(user=instance).exists():
+            ProfilePreferences.objects.create(user=instance)
+
         # Default tier assignment (if exists)
         try:
-            basic = AccountTier.objects.filter(name__iexact="Basic").first()
-            if basic and instance.tier != basic.name:
-                instance.tier = basic.name
+            default_tier = (
+                AccountTier.objects.filter(name__iexact="Free").first()
+                or AccountTier.objects.filter(name__iexact="Basic").first()
+            )
+            if default_tier and instance.tier != default_tier.name:
+                instance.tier = default_tier.name
                 instance.save(update_fields=["tier", "updated_at"])
         except Exception:
             # Do not fail user creation if tiers unavailable

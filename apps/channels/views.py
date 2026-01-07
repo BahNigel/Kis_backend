@@ -11,6 +11,7 @@ from apps.channels.serializers import (
     ChannelDetailSerializer,
     ChannelCreateSerializer,
 )
+from apps.chat.models import BaseConversationRole, ConversationMember
 
 
 class ChannelViewSet(viewsets.ModelViewSet):
@@ -35,20 +36,24 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """
-        For now:
-        - Return channels where the user is an active member of the backing conversation.
+        Public list:
+        - Return all non-archived channels.
+        - Allow optional search by ?q=
+        - Randomize order to avoid ranking bias.
         """
-        user = self.request.user
-
-        return (
-            Channel.objects
-            .select_related("conversation", "owner", "partner", "community")
-            .filter(
-                conversation__memberships__user=user,
-                conversation__memberships__left_at__isnull=True,
-            )
-            .distinct()
+        qs = Channel.objects.select_related("conversation", "owner", "partner", "community").filter(
+            is_archived=False,
         )
+
+        q = (self.request.query_params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(
+                models.Q(name__icontains=q)
+                | models.Q(description__icontains=q)
+                | models.Q(slug__icontains=q)
+            )
+
+        return qs.order_by("?")
 
     def perform_create(self, serializer):
         serializer.save()  # ChannelCreateSerializer handles owner + conversation
@@ -77,3 +82,38 @@ class ChannelViewSet(viewsets.ModelViewSet):
         conv.save()
 
         return Response({"detail": "Channel archived."}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="subscribe")
+    def subscribe(self, request, pk=None):
+        """
+        Subscribe the current user to this channel (read access).
+        """
+        channel = self.get_object()
+        member = ConversationMember.objects.filter(
+            conversation=channel.conversation,
+            user=request.user,
+            left_at__isnull=True,
+        ).first()
+
+        if member:
+            return Response(
+                {
+                    "subscribed": True,
+                    "role": member.base_role,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        member = ConversationMember.objects.create(
+            conversation=channel.conversation,
+            user=request.user,
+            base_role=BaseConversationRole.MEMBER,
+        )
+
+        return Response(
+            {
+                "subscribed": True,
+                "role": member.base_role,
+            },
+            status=status.HTTP_201_CREATED,
+        )

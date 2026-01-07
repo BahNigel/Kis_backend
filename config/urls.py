@@ -33,11 +33,13 @@ urlpatterns = [
     path("api/v1/", include("apps.tiers.urls")),
     path("api/v1/", include("apps.otp.urls")),
     path("api/v1/", include("apps.chat.urls", namespace="chat")),
-    path("api/v1/", include("apps.partners.urls", namespace="partners")),
+    path("api/v1/partners/", include("apps.partners.urls", namespace="partners")),
     path("api/v1/", include("apps.communities.urls", namespace="communities")),
     path("api/v1/", include("apps.groups.urls", namespace="groups")),
     path("api/v1/", include("apps.channels.urls", namespace="channels")),
     path("api/v1/", include("apps.background_removal.urls")),
+    path("api/v1/", include("apps.statuses.urls", namespace="statuses")),
+    path("api/v1/", include("apps.billing.urls")),
 
     # --- JWT auth endpoints (SimpleJWT) ---
     # Obtain access/refresh with username/password

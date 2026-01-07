@@ -2,30 +2,39 @@
 from rest_framework import serializers
 
 from apps.channels.models import Channel
-from apps.chat.models import ConversationType
+from apps.chat.models import (
+    BaseConversationRole,
+    ConversationMember,
+    ConversationSettings,
+    ConversationSendPolicy,
+    ConversationType,
+)
+
+
+def _member_for(channel: Channel, user):
+    if not user or not user.is_authenticated:
+        return None
+    return ConversationMember.objects.filter(
+        conversation=channel.conversation,
+        user=user,
+        left_at__isnull=True,
+    ).first()
+
+
+def _can_send(channel: Channel, member: ConversationMember | None) -> bool:
+    if not member or member.base_role == BaseConversationRole.READONLY:
+        return False
+    settings = ConversationSettings.objects.filter(conversation=channel.conversation).first()
+    if settings and settings.send_policy == ConversationSendPolicy.ADMINS_ONLY:
+        return member.base_role in (BaseConversationRole.OWNER, BaseConversationRole.ADMIN)
+    return True
 
 
 class ChannelListSerializer(serializers.ModelSerializer):
     conversation_id = serializers.UUIDField(source="conversation.id", read_only=True)
-
-    class Meta:
-        model = Channel
-        fields = [
-            "id",
-            "name",
-            "slug",
-            "avatar_url",
-            "is_archived",
-            "partner",
-            "community",
-            "conversation_id",
-            "created_at",
-            "updated_at",
-        ]
-
-
-class ChannelDetailSerializer(serializers.ModelSerializer):
-    conversation_id = serializers.UUIDField(source="conversation.id", read_only=True)
+    is_subscribed = serializers.SerializerMethodField()
+    member_role = serializers.SerializerMethodField()
+    can_post = serializers.SerializerMethodField()
 
     class Meta:
         model = Channel
@@ -35,10 +44,53 @@ class ChannelDetailSerializer(serializers.ModelSerializer):
             "slug",
             "description",
             "avatar_url",
+            "invite_messages",
+            "is_archived",
+            "partner",
+            "community",
+            "is_subscribed",
+            "member_role",
+            "can_post",
+            "conversation_id",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_is_subscribed(self, obj):
+        member = _member_for(obj, self.context["request"].user)
+        return bool(member)
+
+    def get_member_role(self, obj):
+        member = _member_for(obj, self.context["request"].user)
+        return member.base_role if member else None
+
+    def get_can_post(self, obj):
+        member = _member_for(obj, self.context["request"].user)
+        return _can_send(obj, member)
+
+
+class ChannelDetailSerializer(serializers.ModelSerializer):
+    conversation_id = serializers.UUIDField(source="conversation.id", read_only=True)
+    is_subscribed = serializers.SerializerMethodField()
+    member_role = serializers.SerializerMethodField()
+    can_post = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Channel
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "description",
+            "avatar_url",
+            "invite_messages",
             "partner",
             "community",
             "owner",
             "is_archived",
+            "is_subscribed",
+            "member_role",
+            "can_post",
             "conversation_id",
             "created_at",
             "updated_at",
@@ -49,6 +101,18 @@ class ChannelDetailSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def get_is_subscribed(self, obj):
+        member = _member_for(obj, self.context["request"].user)
+        return bool(member)
+
+    def get_member_role(self, obj):
+        member = _member_for(obj, self.context["request"].user)
+        return member.base_role if member else None
+
+    def get_can_post(self, obj):
+        member = _member_for(obj, self.context["request"].user)
+        return _can_send(obj, member)
 
 
 class ChannelCreateSerializer(serializers.ModelSerializer):
@@ -68,6 +132,7 @@ class ChannelCreateSerializer(serializers.ModelSerializer):
             "slug",
             "description",
             "avatar_url",
+            "invite_messages",
             "partner",
             "community",
         ]

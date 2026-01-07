@@ -83,6 +83,9 @@ class ConversationListSerializer(serializers.ModelSerializer):
     # DM request initiator / recipient as nested users
     request_initiator = UserSerializer(read_only=True)
     request_recipient = UserSerializer(read_only=True)
+    group_id = serializers.SerializerMethodField()
+    community_id = serializers.SerializerMethodField()
+    is_community_group = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
@@ -103,7 +106,24 @@ class ConversationListSerializer(serializers.ModelSerializer):
             "request_initiator",
             "request_recipient",
             "participants",
+            "group_id",
+            "community_id",
+            "is_community_group",
         ]
+
+    def get_group_id(self, obj):
+        group = getattr(obj, "group", None)
+        return str(group.id) if group else None
+
+    def get_community_id(self, obj):
+        group = getattr(obj, "group", None)
+        if group and group.community_id:
+            return str(group.community_id)
+        return None
+
+    def get_is_community_group(self, obj):
+        group = getattr(obj, "group", None)
+        return bool(group and group.community_id)
 
 
 class ConversationDetailSerializer(serializers.ModelSerializer):

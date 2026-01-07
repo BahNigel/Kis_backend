@@ -1,8 +1,32 @@
 # apps/communities/serializers.py
+from django.db import models
 from rest_framework import serializers
 
-from apps.communities.models import Community
+from apps.communities.models import (
+    Community,
+    CommunityMembership,
+    CommunityJoinRequest,
+    CommunityBan,
+    CommunityPost,
+    CommunityPostComment,
+    CommunityPostReaction,
+    CommunityCommentReaction,
+    CommunityRole,
+)
 from apps.chat.models import ConversationType  # must include POST
+from apps.accounts.models import User
+
+
+class CommunityUserSerializer(serializers.ModelSerializer):
+    avatar_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ["id", "display_name", "phone", "avatar_url"]
+
+    def get_avatar_url(self, obj):
+        profile = getattr(obj, "profile", None)
+        return getattr(profile, "avatar_url", None) if profile else None
 
 
 class CommunityListSerializer(serializers.ModelSerializer):
@@ -176,4 +200,166 @@ class CommunityCreateSerializer(serializers.ModelSerializer):
             **validated_data,
         )
 
+        CommunityMembership.objects.create(
+            community=community,
+            user=user,
+            role=CommunityRole.OWNER,
+        )
+
         return community
+
+
+class CommunityMembershipSerializer(serializers.ModelSerializer):
+    user = CommunityUserSerializer(read_only=True)
+
+    class Meta:
+        model = CommunityMembership
+        fields = [
+            "id",
+            "community",
+            "user",
+            "role",
+            "joined_at",
+            "left_at",
+            "is_muted",
+            "is_banned",
+            "can_access_all_groups",
+        ]
+        read_only_fields = ["joined_at", "left_at", "is_banned"]
+
+
+class CommunityJoinRequestSerializer(serializers.ModelSerializer):
+    user = CommunityUserSerializer(read_only=True)
+    reviewed_by = CommunityUserSerializer(read_only=True)
+
+    class Meta:
+        model = CommunityJoinRequest
+        fields = [
+            "id",
+            "community",
+            "user",
+            "message",
+            "status",
+            "reviewed_by",
+            "reviewed_at",
+            "created_at",
+        ]
+        read_only_fields = ["status", "reviewed_by", "reviewed_at", "created_at"]
+
+
+class CommunityBanSerializer(serializers.ModelSerializer):
+    user = CommunityUserSerializer(read_only=True)
+    banned_by = CommunityUserSerializer(read_only=True)
+
+    class Meta:
+        model = CommunityBan
+        fields = [
+            "id",
+            "community",
+            "user",
+            "reason",
+            "banned_by",
+            "banned_at",
+            "expires_at",
+        ]
+        read_only_fields = ["banned_at"]
+
+
+class CommunityPostSerializer(serializers.ModelSerializer):
+    author = CommunityUserSerializer(read_only=True)
+    reactions = serializers.SerializerMethodField()
+    comments_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CommunityPost
+        fields = [
+            "id",
+            "community",
+            "author",
+            "text",
+            "styled_text",
+            "attachments",
+            "poll",
+            "event",
+            "link",
+            "status",
+            "is_pinned",
+            "pinned_by",
+            "pinned_at",
+            "is_deleted",
+            "created_at",
+            "updated_at",
+            "reactions",
+            "comments_count",
+        ]
+        read_only_fields = [
+            "author",
+            "status",
+            "is_pinned",
+            "pinned_by",
+            "pinned_at",
+            "is_deleted",
+            "created_at",
+            "updated_at",
+            "reactions",
+            "comments_count",
+        ]
+
+    def get_reactions(self, obj):
+        qs = obj.reactions.values("emoji").annotate(count=models.Count("id"))
+        return list(qs)
+
+    def get_comments_count(self, obj):
+        return obj.comments.filter(is_deleted=False).count()
+
+
+class CommunityPostCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CommunityPost
+        fields = [
+            "id",
+            "community",
+            "text",
+            "styled_text",
+            "attachments",
+            "poll",
+            "event",
+            "link",
+        ]
+
+    def create(self, validated_data):
+        request = self.context["request"]
+        user = request.user
+        post = CommunityPost.objects.create(author=user, **validated_data)
+        return post
+
+
+class CommunityPostCommentSerializer(serializers.ModelSerializer):
+    author = CommunityUserSerializer(read_only=True)
+
+    class Meta:
+        model = CommunityPostComment
+        fields = [
+            "id",
+            "post",
+            "author",
+            "text",
+            "is_deleted",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["author", "is_deleted", "created_at", "updated_at"]
+
+
+class CommunityPostReactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CommunityPostReaction
+        fields = ["id", "post", "user", "emoji", "created_at"]
+        read_only_fields = ["created_at", "user"]
+
+
+class CommunityCommentReactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CommunityCommentReaction
+        fields = ["id", "comment", "user", "emoji", "created_at"]
+        read_only_fields = ["created_at", "user"]

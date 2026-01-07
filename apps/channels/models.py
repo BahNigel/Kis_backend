@@ -43,6 +43,11 @@ class Channel(models.Model):
         blank=True,
         help_text="Optional avatar / icon for this channel.",
     )
+    invite_messages = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Optional invite-only messages shown before subscription.",
+    )
 
     owner = models.ForeignKey(
         User,

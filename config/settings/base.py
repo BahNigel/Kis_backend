@@ -24,6 +24,13 @@ DEBUG = os.environ.get("DEBUG", "False").lower() in ("1", "true", "yes")
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
+# Payments / Wallet
+FLW_PUBLIC_KEY = os.environ.get("FLW_PUBLIC_KEY", "")
+FLW_SECRET_KEY = os.environ.get("FLW_SECRET_KEY", "")
+FLW_WEBHOOK_SECRET = os.environ.get("FLW_WEBHOOK_SECRET", "")
+FLW_REDIRECT_URL = os.environ.get("FLW_REDIRECT_URL", "https://kis.app/payments/complete")
+PAYMENTS_MOCK = os.environ.get("PAYMENTS_MOCK", "False").lower() in ("1", "true", "yes")
+
 # Application definition
 INSTALLED_APPS = [
     # Django
@@ -59,6 +66,8 @@ INSTALLED_APPS = [
     "apps.tiers.apps.TiersConfig",
     "apps.otp.apps.OtpConfig",
     "apps.background_removal.apps.BackgroundRemovalConfig",
+    "apps.statuses.apps.StatusesConfig",
+    "apps.billing.apps.BillingConfig",
 
     # chats
     "apps.chat.apps.ChatConfig",
@@ -150,7 +159,7 @@ AUTHENTICATION_BACKENDS = [
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "apps.accounts.jwt_auth.DeviceBoundJWTAuthentication",
         # Keep SessionAuthentication for browsable API if you like:
         "rest_framework.authentication.SessionAuthentication",
     ),

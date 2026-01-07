@@ -1,8 +1,9 @@
 # apps/partners/serializers.py
 from rest_framework import serializers
 
-from apps.partners.models import Partner
+from apps.partners.models import Partner, PartnerPost
 from apps.chat.models import ConversationType
+from apps.chat.models import ConversationMember, BaseConversationRole
 
 
 class PartnerListSerializer(serializers.ModelSerializer):
@@ -30,6 +31,7 @@ class PartnerDetailSerializer(serializers.ModelSerializer):
         source="main_conversation.id",
         read_only=True,
     )
+    admins = serializers.SerializerMethodField()
 
     class Meta:
         model = Partner
@@ -42,6 +44,7 @@ class PartnerDetailSerializer(serializers.ModelSerializer):
             "owner",
             "is_active",
             "main_conversation_id",
+            "admins",
             "created_at",
             "updated_at",
         ]
@@ -51,6 +54,35 @@ class PartnerDetailSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def get_admins(self, obj):
+        if not obj.main_conversation_id:
+            return []
+        members = (
+            ConversationMember.objects
+            .select_related("user", "user__profile")
+            .filter(
+                conversation_id=obj.main_conversation_id,
+                left_at__isnull=True,
+                base_role__in=[BaseConversationRole.OWNER, BaseConversationRole.ADMIN],
+            )
+        )
+        admins = []
+        for member in members:
+            user = member.user
+            profile = getattr(user, "profile", None)
+            name = getattr(user, "display_name", None) or getattr(user, "username", None) or str(user.id)
+            initials = "".join([part[0].upper() for part in str(name).split()[:2] if part]) or "??"
+            admins.append(
+                {
+                    "id": str(user.id),
+                    "name": name,
+                    "initials": initials,
+                    "position": member.base_role,
+                    "avatarUrl": getattr(profile, "avatar_url", None) if profile else None,
+                }
+            )
+        return admins
 
 
 class PartnerCreateSerializer(serializers.ModelSerializer):
@@ -132,3 +164,54 @@ class PartnerCreateSerializer(serializers.ModelSerializer):
         )
 
         return partner
+
+
+class PartnerPostSerializer(serializers.ModelSerializer):
+    author = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PartnerPost
+        fields = [
+            "id",
+            "partner",
+            "author",
+            "text",
+            "styled_text",
+            "attachments",
+            "poll",
+            "event",
+            "link",
+            "is_deleted",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_author(self, obj):
+        author = obj.author
+        profile = getattr(author, "profile", None)
+        return {
+            "id": str(author.id),
+            "display_name": getattr(author, "display_name", None),
+            "phone": getattr(author, "phone", None),
+            "avatar_url": getattr(profile, "avatar_url", None) if profile else None,
+        }
+
+
+class PartnerPostCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PartnerPost
+        fields = [
+            "id",
+            "partner",
+            "text",
+            "styled_text",
+            "attachments",
+            "poll",
+            "event",
+            "link",
+        ]
+
+    def create(self, validated_data):
+        request = self.context["request"]
+        user = request.user
+        return PartnerPost.objects.create(author=user, **validated_data)

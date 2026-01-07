@@ -1,5 +1,6 @@
 # chat/views.py
 import os
+import uuid
 from django.conf import settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -21,6 +22,7 @@ from .models import (
     MessageThreadLink,
     ConversationType,
     BaseConversationRole,
+    ConversationSendPolicy,
     ConversationRequestState,
 )
 from .serializers import (
@@ -503,6 +505,11 @@ class ConversationViewSet(viewsets.ModelViewSet):
     def ws_perms(self, request, pk=None):
         require_internal_auth(request)
 
+        try:
+            uuid.UUID(str(pk))
+        except Exception:
+            return Response({"isMember": False, "isBlocked": False, "role": "member", "scopes": []})
+
         user_id = request.query_params.get("userId")
         if not user_id:
             auth_header = request.headers.get("Authorization", "")
@@ -542,6 +549,16 @@ class ConversationViewSet(viewsets.ModelViewSet):
 
         # Allow messaging during pending direct requests (frontend handles UX)
 
+        can_send = True
+        settings = ConversationSettings.objects.filter(conversation=conversation).first()
+        if conversation.is_locked and member.base_role not in (BaseConversationRole.OWNER, BaseConversationRole.ADMIN):
+            can_send = False
+        if member.base_role == BaseConversationRole.READONLY:
+            can_send = False
+        if settings and settings.send_policy == ConversationSendPolicy.ADMINS_ONLY:
+            if member.base_role not in (BaseConversationRole.OWNER, BaseConversationRole.ADMIN):
+                can_send = False
+
         scopes = []
         if member.base_role in (BaseConversationRole.OWNER, BaseConversationRole.ADMIN):
             scopes.append("chat:admin")
@@ -550,6 +567,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
             "isMember": True,
             "isBlocked": False,
             "role": member.base_role,
+            "canSend": can_send,
             "scopes": scopes,
         })
 

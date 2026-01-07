@@ -343,10 +343,24 @@ class User(AbstractBaseUser, PermissionsMixin, BaseEntity):
 # ---------------------------------------------------------------------
 # Profile
 # ---------------------------------------------------------------------
+def profile_avatar_upload_path(instance, filename: str) -> str:
+    return f"profiles/{instance.user_id}/avatar/{filename}"
+
+
+def profile_cover_upload_path(instance, filename: str) -> str:
+    return f"profiles/{instance.user_id}/cover/{filename}"
+
+
+def profile_showcase_upload_path(instance, filename: str) -> str:
+    return f"profiles/{instance.user_id}/showcase/{instance.type}/{filename}"
+
+
 class Profile(BaseEntity):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile")
     avatar_url = models.URLField(blank=True, null=True)
     cover_url = models.URLField(blank=True, null=True)
+    avatar_file = models.ImageField(upload_to=profile_avatar_upload_path, null=True, blank=True)
+    cover_file = models.ImageField(upload_to=profile_cover_upload_path, null=True, blank=True)
     headline = models.CharField(max_length=255, blank=True, null=True)
     bio = models.TextField(blank=True, null=True)
     industry = models.CharField(max_length=100, blank=True, null=True)
@@ -362,7 +376,7 @@ class Profile(BaseEntity):
     def update_completion(self) -> int:
         """Recompute a simple completion heuristic and persist."""
         score = 0
-        if self.avatar_url:
+        if self.avatar_url or self.avatar_file:
             score += 20
         if self.headline:
             score += 20
@@ -407,11 +421,48 @@ class Session(BaseEntity):
 
 class Device(BaseEntity):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="devices")
+    device_id = models.CharField(max_length=128, db_index=True)
     platform = models.CharField(max_length=100)
+    name = models.CharField(max_length=200, blank=True, null=True)
+    user_agent = models.TextField(null=True, blank=True)
+    last_ip = models.GenericIPAddressField(null=True, blank=True)
     last_seen_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        indexes = [models.Index(fields=["user", "last_seen_at"])]
+        indexes = [
+            models.Index(fields=["user", "last_seen_at"]),
+            models.Index(fields=["user", "device_id"]),
+        ]
+
+
+class E2EDeviceKey(BaseEntity):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="e2ee_devices")
+    device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name="e2ee_keys")
+    identity_key = models.TextField()
+    signed_prekey_id = models.IntegerField()
+    signed_prekey = models.TextField()
+    signed_prekey_signature = models.TextField()
+    registration_id = models.IntegerField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "device"]),
+            models.Index(fields=["user", "device", "signed_prekey_id"]),
+        ]
+
+
+class E2EPreKey(BaseEntity):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="e2ee_prekeys")
+    device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name="e2ee_prekeys")
+    prekey_id = models.IntegerField()
+    prekey = models.TextField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "device", "prekey_id"]),
+            models.Index(fields=["user", "device", "consumed_at"]),
+        ]
 
 class ApiToken(BaseEntity):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="api_tokens")
@@ -654,5 +705,108 @@ class Recommendation(BaseEntity):
     created_at = models.DateTimeField(default=timezone.now)
     approved = models.BooleanField(default=False)
     approved_at = models.DateTimeField(null=True, blank=True)
+
+
+class ProfileFieldVisibility(BaseEntity):
+    VISIBILITY_CHOICES = [
+        ("public", "Public"),
+        ("contacts", "Contacts"),
+        ("custom", "Custom"),
+        ("private", "Private"),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="profile_field_visibility",
+    )
+    field_key = models.CharField(max_length=100)
+    visibility = models.CharField(max_length=20, choices=VISIBILITY_CHOICES, default="public")
+    allow_user_ids = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "field_key"])]
+        unique_together = ("user", "field_key")
+
+
+class ProfileArticle(BaseEntity):
+    STATUS_CHOICES = [
+        ("draft", "Draft"),
+        ("published", "Published"),
+    ]
+    VISIBILITY_CHOICES = [
+        ("public", "Public"),
+        ("contacts", "Contacts"),
+        ("custom", "Custom"),
+        ("private", "Private"),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="profile_articles",
+    )
+    title = models.CharField(max_length=255)
+    summary = models.TextField(blank=True, null=True)
+    body = models.TextField()
+    cover_url = models.URLField(blank=True, null=True)
+    tags = models.JSONField(default=list, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="draft")
+    visibility = models.CharField(max_length=20, choices=VISIBILITY_CHOICES, default="public")
+    allow_user_ids = models.JSONField(default=list, blank=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "status"]),
+            models.Index(fields=["visibility"]),
+        ]
+
+
+class ProfilePreferences(BaseEntity):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="profile_preferences",
+    )
+    services = models.JSONField(default=list, blank=True)
+    availability = models.JSONField(default=dict, blank=True)
+    skill_badges = models.JSONField(default=list, blank=True)
+    languages = models.JSONField(default=list, blank=True)
+    location = models.JSONField(default=dict, blank=True)
+    compensation = models.JSONField(default=dict, blank=True)
+    social_proof = models.JSONField(default=dict, blank=True)
+    ask_tags = models.JSONField(default=list, blank=True)
+    highlights = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user"])]
+
+
+class ProfileShowcase(BaseEntity):
+    TYPE_CHOICES = [
+        ("portfolio", "Portfolio"),
+        ("case_study", "Case Study"),
+        ("testimonial", "Testimonial"),
+        ("certification", "Certification"),
+        ("intro_video", "Intro Video"),
+        ("highlight", "Highlight"),
+    ]
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="profile_showcases",
+    )
+    type = models.CharField(max_length=30, choices=TYPE_CHOICES)
+    title = models.CharField(max_length=255)
+    summary = models.TextField(blank=True, null=True)
+    payload = models.JSONField(default=dict, blank=True)
+    file = models.FileField(upload_to=profile_showcase_upload_path, null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "type"]),
+            models.Index(fields=["type"]),
+        ]
     
     

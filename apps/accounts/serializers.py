@@ -26,6 +26,10 @@ from .models import (
     UserSkill,
     Project,
     Recommendation,
+    ProfileFieldVisibility,
+    ProfileArticle,
+    ProfilePreferences,
+    ProfileShowcase,
 )
 
 # -------------------------------------------------------------------
@@ -34,6 +38,10 @@ from .models import (
 class ProfileSerializer(serializers.ModelSerializer):
     id = serializers.UUIDField(read_only=True)
     user = serializers.PrimaryKeyRelatedField(read_only=True)
+    avatar_url = serializers.SerializerMethodField()
+    cover_url = serializers.SerializerMethodField()
+    avatar_file = serializers.ImageField(write_only=True, required=False, allow_null=True)
+    cover_file = serializers.ImageField(write_only=True, required=False, allow_null=True)
 
     class Meta:
         model = Profile
@@ -42,6 +50,8 @@ class ProfileSerializer(serializers.ModelSerializer):
             "user",
             "avatar_url",
             "cover_url",
+            "avatar_file",
+            "cover_file",
             "headline",
             "bio",
             "industry",
@@ -53,14 +63,156 @@ class ProfileSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ("id", "user", "completion_score", "created_at", "updated_at")
 
+    def get_avatar_url(self, obj: Profile):
+        if obj.avatar_file:
+            request = self.context.get("request")
+            url = obj.avatar_file.url
+            return request.build_absolute_uri(url) if request else url
+        return obj.avatar_url
+
+    def get_cover_url(self, obj: Profile):
+        if obj.cover_file:
+            request = self.context.get("request")
+            url = obj.cover_file.url
+            return request.build_absolute_uri(url) if request else url
+        return obj.cover_url
+
     def update(self, instance, validated_data):
         result = super().update(instance, validated_data)
-        if any(k in validated_data for k in ("avatar_url", "headline", "bio")):
+        if any(k in validated_data for k in ("avatar_url", "avatar_file", "headline", "bio")):
             try:
                 instance.update_completion()
             except Exception:
                 pass
         return result
+
+
+class ProfileFieldVisibilitySerializer(serializers.ModelSerializer):
+    id = serializers.UUIDField(read_only=True)
+    user = serializers.PrimaryKeyRelatedField(read_only=True)
+
+    class Meta:
+        model = ProfileFieldVisibility
+        fields = [
+            "id",
+            "user",
+            "field_key",
+            "visibility",
+            "allow_user_ids",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ("id", "user", "created_at", "updated_at")
+
+    def validate_allow_user_ids(self, value):
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError("allow_user_ids must be a list of user ids.")
+        # basic sanity: cast everything to string
+        return [str(item) for item in value if item]
+
+
+class ProfileArticleSerializer(serializers.ModelSerializer):
+    id = serializers.UUIDField(read_only=True)
+    user = serializers.PrimaryKeyRelatedField(read_only=True)
+
+    class Meta:
+        model = ProfileArticle
+        fields = [
+            "id",
+            "user",
+            "title",
+            "summary",
+            "body",
+            "cover_url",
+            "tags",
+            "status",
+            "visibility",
+            "allow_user_ids",
+            "published_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ("id", "user", "published_at", "created_at", "updated_at")
+
+    def validate_allow_user_ids(self, value):
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError("allow_user_ids must be a list of user ids.")
+        return [str(item) for item in value if item]
+
+    def create(self, validated_data):
+        if self.context.get("request"):
+            validated_data["user"] = self.context["request"].user
+        if validated_data.get("status") == "published" and not validated_data.get("published_at"):
+            validated_data["published_at"] = timezone.now()
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        if validated_data.get("status") == "published" and not instance.published_at:
+            validated_data["published_at"] = timezone.now()
+        return super().update(instance, validated_data)
+
+
+class ProfilePreferencesSerializer(serializers.ModelSerializer):
+    id = serializers.UUIDField(read_only=True)
+    user = serializers.PrimaryKeyRelatedField(read_only=True)
+
+    class Meta:
+        model = ProfilePreferences
+        fields = [
+            "id",
+            "user",
+            "services",
+            "availability",
+            "skill_badges",
+            "languages",
+            "location",
+            "compensation",
+            "social_proof",
+            "ask_tags",
+            "highlights",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ("id", "user", "created_at", "updated_at")
+
+
+class ProfileShowcaseSerializer(serializers.ModelSerializer):
+    id = serializers.UUIDField(read_only=True)
+    user = serializers.PrimaryKeyRelatedField(read_only=True)
+    file_url = serializers.SerializerMethodField()
+    file = serializers.FileField(required=False, allow_null=True, write_only=True)
+
+    class Meta:
+        model = ProfileShowcase
+        fields = [
+            "id",
+            "user",
+            "type",
+            "title",
+            "summary",
+            "payload",
+            "file",
+            "file_url",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ("id", "user", "file_url", "created_at", "updated_at")
+
+    def get_file_url(self, obj: ProfileShowcase):
+        if not obj.file:
+            return None
+        request = self.context.get("request")
+        url = obj.file.url
+        return request.build_absolute_uri(url) if request else url
+
+    def create(self, validated_data):
+        if self.context.get("request"):
+            validated_data["user"] = self.context["request"].user
+        return super().create(validated_data)
 
 
 # -------------------------------------------------------------------
@@ -158,9 +310,143 @@ class ApiTokenListSerializer(serializers.ModelSerializer):
 # Account tier, subscription, session serializers
 # -------------------------------------------------------------------
 class AccountTierSerializer(serializers.ModelSerializer):
+    feature_list = serializers.SerializerMethodField()
+    feature_tagline = serializers.SerializerMethodField()
+    feature_badge = serializers.SerializerMethodField()
+    feature_highlight = serializers.SerializerMethodField()
+
+    def _tier_key(self, obj: AccountTier) -> str:
+        return (obj.name or "").strip().lower()
+
+    def _from_features_json(self, obj: AccountTier):
+        features = obj.features_json or {}
+        feature_list = features.get("feature_list") or features.get("features")
+        if isinstance(feature_list, list):
+            return {
+                "feature_list": [str(x) for x in feature_list],
+                "feature_tagline": features.get("feature_tagline"),
+                "feature_badge": features.get("feature_badge"),
+                "feature_highlight": features.get("feature_highlight"),
+            }
+        return None
+
+    def _default_features(self, obj: AccountTier) -> dict:
+        key = self._tier_key(obj)
+        if "partner" in key:
+            return {
+                "feature_tagline": "Organizations, ministries & enterprises",
+                "feature_badge": "Partner",
+                "feature_highlight": "Multi-account orgs + revenue tools",
+                "feature_list": [
+                    "Verified organization profile",
+                    "Multiple sub-accounts under one partner org",
+                    "Org-level roles & permissions",
+                    "Live streaming + events",
+                    "Donations & revenue tools",
+                    "Advanced analytics dashboard",
+                    "Community & group management at scale",
+                    "Priority support & onboarding",
+                ],
+            }
+        if "business pro" in key:
+            return {
+                "feature_tagline": "High-impact teams and creators",
+                "feature_badge": "Most popular",
+                "feature_highlight": "Advanced analytics + team workflows",
+                "feature_list": [
+                    "Unlimited communities & groups",
+                    "Team collaboration & admin roles",
+                    "Advanced insights & reporting",
+                    "Campaign scheduler & post boosting",
+                    "CRM-lite lead capture",
+                    "Branding controls & verification",
+                    "Priority moderation tools",
+                    "Faster support response",
+                ],
+            }
+        if "business" in key:
+            return {
+                "feature_tagline": "Teams, growth & visibility",
+                "feature_highlight": "KIS Business broadcast + storefront",
+                "feature_list": [
+                    "KIS Business broadcast channel",
+                    "Business profile + CTA buttons",
+                    "Multiple admins for business page",
+                    "Business insights & audience metrics",
+                    "Basic catalog for services/products",
+                    "Promo codes + offers",
+                    "Auto-reply & business hours",
+                    "Featured discovery boost",
+                ],
+            }
+        if "pro" in key:
+            return {
+                "feature_tagline": "Creators and power users",
+                "feature_highlight": "Enhanced profile + higher limits",
+                "feature_list": [
+                    "More communities & groups",
+                    "Enhanced profile visibility",
+                    "Higher media limits",
+                    "Advanced messaging tools",
+                    "Priority search ranking",
+                    "Extended support",
+                    "Status & story enhancements",
+                    "Custom themes",
+                ],
+            }
+        return {
+            "feature_tagline": "Start free, upgrade anytime",
+            "feature_highlight": "Everything you need to begin",
+            "feature_list": [
+                "Direct messaging",
+                "Core community access",
+                "Standard profile",
+                "Basic storage",
+                "Search & discovery",
+                "Standard support",
+                "Status updates",
+                "Basic groups",
+            ],
+        }
+
+    def get_feature_list(self, obj: AccountTier):
+        override = self._from_features_json(obj)
+        if override and override.get("feature_list"):
+            return override["feature_list"]
+        return self._default_features(obj)["feature_list"]
+
+    def get_feature_tagline(self, obj: AccountTier):
+        override = self._from_features_json(obj)
+        if override and override.get("feature_tagline"):
+            return override["feature_tagline"]
+        return self._default_features(obj).get("feature_tagline")
+
+    def get_feature_badge(self, obj: AccountTier):
+        override = self._from_features_json(obj)
+        if override and override.get("feature_badge"):
+            return override["feature_badge"]
+        return self._default_features(obj).get("feature_badge")
+
+    def get_feature_highlight(self, obj: AccountTier):
+        override = self._from_features_json(obj)
+        if override and override.get("feature_highlight"):
+            return override["feature_highlight"]
+        return self._default_features(obj).get("feature_highlight")
+
     class Meta:
         model = AccountTier
-        fields = "__all__"
+        fields = (
+            "id",
+            "name",
+            "price_cents",
+            "features_json",
+            "feature_list",
+            "feature_tagline",
+            "feature_badge",
+            "feature_highlight",
+            "created_at",
+            "updated_at",
+        )
         read_only_fields = ("id", "created_at", "updated_at")
 
 
@@ -306,6 +592,10 @@ class LoginSerializer(serializers.Serializer):
     phone = serializers.CharField(write_only=True)
     password = serializers.CharField(write_only=True)
     country = serializers.CharField(write_only=True, default="CM", required=False)
+    device_id = serializers.CharField(write_only=True)
+    device_platform = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    device_name = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    otp_code = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     def validate(self, attrs):
         phone_raw = (attrs.get("phone") or "").strip()
@@ -319,6 +609,10 @@ class LoginSerializer(serializers.Serializer):
 
         if not phone_raw or not password:
             raise serializers.ValidationError({"detail": _("Phone and password are required.")})
+
+        device_id = (attrs.get("device_id") or "").strip()
+        if not device_id:
+            raise serializers.ValidationError({"detail": _("Device id is required.")})
 
         # 1) Let the auth backend handle phone/email normalization.
         user = authenticate(request=req, username=phone_raw, password=password)

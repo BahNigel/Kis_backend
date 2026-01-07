@@ -52,3 +52,35 @@ class Partner(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
+
+class PartnerPost(models.Model):
+    """
+    Lightweight feed posts for a Partner's general feed page.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    partner = models.ForeignKey(
+        Partner,
+        on_delete=models.CASCADE,
+        related_name="posts",
+    )
+    author = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="partner_posts",
+    )
+    text = models.TextField(blank=True)
+    styled_text = models.JSONField(default=dict, blank=True)
+    attachments = models.JSONField(default=list, blank=True)
+    poll = models.JSONField(default=dict, blank=True)
+    event = models.JSONField(default=dict, blank=True)
+    link = models.URLField(blank=True)
+    is_deleted = models.BooleanField(default=False)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "partner_post"
+        indexes = [
+            models.Index(fields=["partner", "created_at"]),
+        ]

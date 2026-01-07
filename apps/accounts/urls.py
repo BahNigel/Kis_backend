@@ -10,9 +10,18 @@ from .views import (
     RegisterView,     # ViewSet (create -> JWTs)
     LoginView,        # APIView (returns JWTs)
     LogoutView,       # APIView (blacklists refresh if enabled)
+    TwoFactorSetupView,
+    TwoFactorEnableView,
+    TwoFactorDisableView,
+    E2EERegisterKeysView,
+    E2EEFetchBundleView,
     UserSkillViewSet,
     UserViewSet,
     ProfileViewSet,
+    ProfileFieldVisibilityViewSet,
+    ProfileArticleViewSet,
+    ProfilePreferencesViewSet,
+    ProfileShowcaseViewSet,
     AccountTierViewSet,
     SubscriptionViewSet,
     SessionViewSet,
@@ -36,6 +45,10 @@ router.register(r"auth/register", RegisterView, basename="auth-register")
 # Core resources
 router.register(r"users", UserViewSet, basename="users")
 router.register(r"profiles", ProfileViewSet, basename="profiles")
+router.register(r"profile-privacy", ProfileFieldVisibilityViewSet, basename="profile-privacy")
+router.register(r"profile-articles", ProfileArticleViewSet, basename="profile-articles")
+router.register(r"profile-preferences", ProfilePreferencesViewSet, basename="profile-preferences")
+router.register(r"profile-showcases", ProfileShowcaseViewSet, basename="profile-showcases")
 router.register(r"tiers", AccountTierViewSet, basename="tiers")
 router.register(r"subscriptions", SubscriptionViewSet, basename="subscriptions")
 router.register(r"sessions", SessionViewSet, basename="sessions")
@@ -49,6 +62,11 @@ urlpatterns = [
     # JWT login/logout you defined in views.py
     path("auth/login/",  LoginView.as_view(),  name="auth-login"),
     path("auth/logout/", LogoutView.as_view(), name="auth-logout"),
+    path("auth/2fa/setup/", TwoFactorSetupView.as_view(), name="auth-2fa-setup"),
+    path("auth/2fa/enable/", TwoFactorEnableView.as_view(), name="auth-2fa-enable"),
+    path("auth/2fa/disable/", TwoFactorDisableView.as_view(), name="auth-2fa-disable"),
+    path("auth/e2ee/keys/", E2EERegisterKeysView.as_view(), name="auth-e2ee-keys"),
+    path("auth/e2ee/keys/<uuid:user_id>/", E2EEFetchBundleView.as_view(), name="auth-e2ee-keys-user"),
 
     # Optional: direct SimpleJWT endpoints (tooling-friendly)
     path("auth/jwt/create/",  TokenObtainPairView.as_view(), name="jwt-create"),
